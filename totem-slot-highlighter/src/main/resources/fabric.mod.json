@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "totem-slot-highlighter",
+  "version": "${version}",
+  "name": "Totem Slot Highlighter",
+  "description": "Highlights inventory slots containing Totems of Undying with a red background.",
+  "authors": [
+    "khai2kzgaming"
+  ],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.khai2kzgaming.totemhighlighter.TotemSlotHighlighterClient"
+    ]
+  },
+  "mixins": [
+    "totem-slot-highlighter.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.15.11",
+    "minecraft": "~1.20.6",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

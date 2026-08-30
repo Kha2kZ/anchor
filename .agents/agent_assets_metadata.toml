@@ -1,0 +1,16 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "jGX_IbJzV-XMFxe79sDUw"
+uri = "file://totem-slot-highlighter/build/libs/totem-slot-highlighter-1.0.0.jar"
+type = "unspecified"
+title = "Totem Slot Highlighter 1.0.0"
+description = "Client-side Fabric mod for Minecraft 1.20.6. Totem-containing slots in the player's inventory and hotbar receive a translucent red background and bright red border."
+logical_id = "6bd8130f-452b-4adb-a8fd-42f242485b58"
+content_hash = "sha256:fc6d0c6a1641d3cca0c48d87937ced734c4cf8b24fe5c38c43ea6a8a878f60c6"
+size = 4621
+mtime_ms = 1788091613887
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:39c8716b-daea-444d-821b-355560647309/6bd8130f-452b-4adb-a8fd-42f242485b58/5e39ef8d-abaf-44a1-ba42-6b23c30c6f6b"
+storage_version_token = "1788091638921458"
+content_type = "application/octet-stream"
