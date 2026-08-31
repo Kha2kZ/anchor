@@ -41,6 +41,16 @@ the active mode again to turn the automation off.
 
 Press **O** to open the Anchor Macro menu. From there you can choose the mode,
 toggle the mod on or off, and select the hotbar slot used after Safe Anchor.
+The panel has two tabs:
+
+- **Generic** — master toggle, mode toggles, and the destination hotbar slot.
+- **Keybinds** — open Minecraft's Controls menu to assign a primary key to each
+  mode, then optionally set a modifier key for a chord.
+
+All four mode keybinds default to `NONE`. For example, assign `F` to Full Safe
+Anchor in Minecraft's Controls menu, then set its modifier to `O` in the
+Keybinds tab to use `O+F`.
+
 The setting is saved in `config/anchor-macro.json`.
 
 The mod is client-side and is intended for singleplayer or worlds where you
