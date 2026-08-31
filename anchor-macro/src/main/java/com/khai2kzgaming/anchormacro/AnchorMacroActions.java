@@ -34,7 +34,9 @@ public final class AnchorMacroActions {
         pendingAction = new PendingAction(
                 anchorPos.toImmutable(),
                 AnchorMacroClient.CONFIG.mode,
-                AnchorMacroClient.CONFIG.safeHotbarSlot
+                AnchorMacroClient.CONFIG.safeHotbarSlot,
+                AnchorMacroClient.CONFIG.chargeDelayMs,
+                AnchorMacroClient.CONFIG.defenseDelayMs
         );
     }
 
@@ -49,6 +51,10 @@ public final class AnchorMacroActions {
         }
 
         PendingAction action = pendingAction;
+        if (!action.isReady()) {
+            return;
+        }
+
         if (!isRespawnAnchor(client.world, action.anchorPos)) {
             if (++action.confirmationTicks > 10) {
                 notify(client, "Anchor Macro: anchor placement was not confirmed.");
@@ -86,6 +92,7 @@ public final class AnchorMacroActions {
             } else {
                 action.stage = Stage.PLACE_SHIELD;
             }
+            action.waitFor(action.defenseDelayMs);
             return;
         }
 
@@ -124,6 +131,7 @@ public final class AnchorMacroActions {
 
             if (action.mode == AnchorMacroConfig.Mode.FULL_SAFE_ANCHOR) {
                 action.stage = Stage.EXPLODE_ANCHOR;
+                action.waitFor(action.defenseDelayMs);
                 return;
             }
             pendingAction = null;
@@ -233,17 +241,37 @@ public final class AnchorMacroActions {
         private final BlockPos anchorPos;
         private final AnchorMacroConfig.Mode mode;
         private final int safeHotbarSlot;
+        private final int chargeDelayMs;
+        private final int defenseDelayMs;
         private Stage stage = Stage.CHARGE_ANCHOR;
         private int confirmationTicks;
+        private long nextActionAtNanos;
 
         private PendingAction(
                 BlockPos anchorPos,
                 AnchorMacroConfig.Mode mode,
-                int safeHotbarSlot
+                int safeHotbarSlot,
+                int chargeDelayMs,
+                int defenseDelayMs
         ) {
             this.anchorPos = anchorPos;
             this.mode = mode;
             this.safeHotbarSlot = AnchorMacroConfig.clampHotbarSlot(safeHotbarSlot);
+            this.chargeDelayMs = AnchorMacroConfig.clampDelayMs(chargeDelayMs);
+            this.defenseDelayMs = AnchorMacroConfig.clampDelayMs(defenseDelayMs);
+            this.nextActionAtNanos = System.nanoTime() + millisecondsToNanos(this.chargeDelayMs);
+        }
+
+        private boolean isReady() {
+            return System.nanoTime() >= nextActionAtNanos;
+        }
+
+        private void waitFor(int delayMs) {
+            nextActionAtNanos = System.nanoTime() + millisecondsToNanos(delayMs);
+        }
+
+        private static long millisecondsToNanos(int milliseconds) {
+            return milliseconds * 1_000_000L;
         }
     }
 

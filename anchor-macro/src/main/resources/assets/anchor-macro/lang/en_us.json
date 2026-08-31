@@ -13,6 +13,8 @@
   "screen.anchor-macro.safe_anchor": "Safe Anchor: %s",
   "screen.anchor-macro.full_safe_anchor": "Full Safe Anchor: %s",
   "screen.anchor-macro.full_anchor": "Full Anchor: %s",
+  "screen.anchor-macro.charge_delay": "Charge delay (ms)",
+  "screen.anchor-macro.defense_delay": "Defense delay (ms)",
   "screen.anchor-macro.safe_slot": "Hotbar slot after Safe Anchor",
   "screen.anchor-macro.selected_slot": "Selected slot: %s"
   ,"screen.anchor-macro.open_controls": "Open Minecraft Controls",

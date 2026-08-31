@@ -11,6 +11,7 @@ import org.lwjgl.glfw.GLFW;
 
 public final class AnchorMacroConfig {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private static final int MAX_ACTION_DELAY_MS = 10_000;
     private static final Path CONFIG_PATH = FabricLoader.getInstance()
             .getConfigDir()
             .resolve("anchor-macro.json");
@@ -18,6 +19,8 @@ public final class AnchorMacroConfig {
     public boolean enabled = true;
     public Mode mode = Mode.AUTO_GLOWSTONE;
     public int safeHotbarSlot = 0;
+    public int chargeDelayMs = 100;
+    public int defenseDelayMs = 100;
     public int autoGlowstoneModifier = GLFW.GLFW_KEY_UNKNOWN;
     public int safeAnchorModifier = GLFW.GLFW_KEY_UNKNOWN;
     public int fullSafeAnchorModifier = GLFW.GLFW_KEY_UNKNOWN;
@@ -34,6 +37,8 @@ public final class AnchorMacroConfig {
                 return new AnchorMacroConfig();
             }
             config.safeHotbarSlot = clampHotbarSlot(config.safeHotbarSlot);
+            config.chargeDelayMs = clampDelayMs(config.chargeDelayMs);
+            config.defenseDelayMs = clampDelayMs(config.defenseDelayMs);
             if (config.mode == null) {
                 config.mode = Mode.AUTO_GLOWSTONE;
             }
@@ -56,6 +61,10 @@ public final class AnchorMacroConfig {
 
     public static int clampHotbarSlot(int slot) {
         return Math.max(0, Math.min(8, slot));
+    }
+
+    public static int clampDelayMs(int delayMs) {
+        return Math.max(0, Math.min(MAX_ACTION_DELAY_MS, delayMs));
     }
 
     public int getModifier(Mode mode) {

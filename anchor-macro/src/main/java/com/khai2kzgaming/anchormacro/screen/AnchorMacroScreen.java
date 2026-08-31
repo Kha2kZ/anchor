@@ -6,6 +6,7 @@ import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.option.ControlsOptionsScreen;
 import net.minecraft.client.gui.widget.ButtonWidget;
+import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.text.Text;
 import org.lwjgl.glfw.GLFW;
@@ -14,6 +15,8 @@ public final class AnchorMacroScreen extends Screen {
     private final Screen parent;
     private Tab activeTab = Tab.GENERIC;
     private AnchorMacroConfig.Mode capturingModifier;
+    private TextFieldWidget chargeDelayField;
+    private TextFieldWidget defenseDelayField;
 
     public AnchorMacroScreen(Screen parent) {
         super(Text.translatable("screen.anchor-macro.title"));
@@ -60,6 +63,38 @@ public final class AnchorMacroScreen extends Screen {
             ).dimensions(buttonX, 95 + index * 25, buttonWidth, 20).build());
         }
 
+        int delayFieldWidth = 104;
+        int delayGap = 12;
+        int delayStartX = centerX - (delayFieldWidth * 2 + delayGap) / 2;
+
+        chargeDelayField = new TextFieldWidget(
+                this.textRenderer,
+                delayStartX,
+                220,
+                delayFieldWidth,
+                20,
+                Text.translatable("screen.anchor-macro.charge_delay")
+        );
+        chargeDelayField.setMaxLength(5);
+        chargeDelayField.setText(Integer.toString(AnchorMacroClient.CONFIG.chargeDelayMs));
+        chargeDelayField.setTextPredicate(AnchorMacroScreen::isDelayText);
+        chargeDelayField.setChangedListener(text -> updateDelay(text, true));
+        addDrawableChild(chargeDelayField);
+
+        defenseDelayField = new TextFieldWidget(
+                this.textRenderer,
+                delayStartX + delayFieldWidth + delayGap,
+                220,
+                delayFieldWidth,
+                20,
+                Text.translatable("screen.anchor-macro.defense_delay")
+        );
+        defenseDelayField.setMaxLength(5);
+        defenseDelayField.setText(Integer.toString(AnchorMacroClient.CONFIG.defenseDelayMs));
+        defenseDelayField.setTextPredicate(AnchorMacroScreen::isDelayText);
+        defenseDelayField.setChangedListener(text -> updateDelay(text, false));
+        addDrawableChild(defenseDelayField);
+
         int slotButtonWidth = 24;
         int slotsStartX = centerX - (slotButtonWidth * 9 + 4 * 8) / 2;
         for (int slot = 0; slot < 9; slot++) {
@@ -68,13 +103,13 @@ public final class AnchorMacroScreen extends Screen {
             addDrawableChild(ButtonWidget.builder(
                     Text.literal(Integer.toString(slot + 1)),
                     button -> setSafeHotbarSlot(selectedSlot)
-            ).dimensions(x, 225, slotButtonWidth, 20).build());
+            ).dimensions(x, 275, slotButtonWidth, 20).build());
         }
 
         addDrawableChild(ButtonWidget.builder(
                 Text.translatable("gui.done"),
                 button -> close()
-        ).dimensions(buttonX, 275, buttonWidth, 20).build());
+        ).dimensions(buttonX, 325, buttonWidth, 20).build());
     }
 
     private void initKeybindsTab(int centerX) {
@@ -139,11 +174,28 @@ public final class AnchorMacroScreen extends Screen {
         );
 
         if (activeTab == Tab.GENERIC) {
+            int delayFieldWidth = 104;
+            int delayGap = 12;
+            int delayStartX = this.width / 2 - (delayFieldWidth * 2 + delayGap) / 2;
+            context.drawCenteredTextWithShadow(
+                    this.textRenderer,
+                    Text.translatable("screen.anchor-macro.charge_delay"),
+                    delayStartX + delayFieldWidth / 2,
+                    210,
+                    0xFFFFFF
+            );
+            context.drawCenteredTextWithShadow(
+                    this.textRenderer,
+                    Text.translatable("screen.anchor-macro.defense_delay"),
+                    delayStartX + delayFieldWidth + delayGap + delayFieldWidth / 2,
+                    210,
+                    0xFFFFFF
+            );
             context.drawCenteredTextWithShadow(
                     this.textRenderer,
                     Text.translatable("screen.anchor-macro.safe_slot"),
                     this.width / 2,
-                    210,
+                    265,
                     0xFFFFFF
             );
             context.drawCenteredTextWithShadow(
@@ -151,7 +203,7 @@ public final class AnchorMacroScreen extends Screen {
                     Text.translatable("screen.anchor-macro.selected_slot",
                             AnchorMacroClient.CONFIG.safeHotbarSlot + 1),
                     this.width / 2,
-                    260,
+                    310,
                     0xAAAAAA
             );
         } else {
@@ -247,6 +299,28 @@ public final class AnchorMacroScreen extends Screen {
         AnchorMacroClient.CONFIG.safeHotbarSlot = AnchorMacroConfig.clampHotbarSlot(slot);
         AnchorMacroClient.CONFIG.save();
         clearAndInit();
+    }
+
+    private void updateDelay(String text, boolean chargeDelay) {
+        if (text.isEmpty()) {
+            return;
+        }
+
+        try {
+            int delay = AnchorMacroConfig.clampDelayMs(Integer.parseInt(text));
+            if (chargeDelay) {
+                AnchorMacroClient.CONFIG.chargeDelayMs = delay;
+            } else {
+                AnchorMacroClient.CONFIG.defenseDelayMs = delay;
+            }
+            AnchorMacroClient.CONFIG.save();
+        } catch (NumberFormatException ignored) {
+            // The text predicate prevents this during normal editing.
+        }
+    }
+
+    private static boolean isDelayText(String text) {
+        return text.isEmpty() || text.chars().allMatch(Character::isDigit);
     }
 
     private void beginModifierCapture(AnchorMacroConfig.Mode mode) {

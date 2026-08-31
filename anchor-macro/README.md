@@ -49,7 +49,10 @@ Press **O** to open the Anchor Macro menu. From there you can choose the mode,
 toggle the mod on or off, and select the hotbar slot used after Safe Anchor.
 The panel has two tabs:
 
-- **Generic** — master toggle, mode toggles, and the destination hotbar slot.
+- **Generic** — master toggle, mode toggles, the destination hotbar slot, and
+  separate configurable **Charge delay (ms)** and **Defense delay (ms)** fields.
+  Charge delay waits after placing the anchor; defense delay waits between
+  charging, defense placement, and detonation.
 - **Keybinds** — open Minecraft's Controls menu to assign a primary key to each
   mode, then optionally set a modifier key for a chord.
 
