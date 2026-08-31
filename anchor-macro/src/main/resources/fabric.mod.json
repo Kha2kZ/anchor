@@ -8,6 +8,7 @@
     "khai2kzgaming"
   ],
   "license": "MIT",
+  "icon": "assets/anchor-macro/icon.png",
   "environment": "client",
   "entrypoints": {
     "client": [
