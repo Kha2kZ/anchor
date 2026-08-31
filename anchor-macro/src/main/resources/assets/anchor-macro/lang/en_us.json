@@ -1,0 +1,9 @@
+{
+  "category.anchor-macro": "Anchor Macro",
+  "key.anchor-macro.open_menu": "Open Anchor Macro menu",
+  "screen.anchor-macro.title": "Anchor Macro",
+  "screen.anchor-macro.auto_glowstone": "%s Auto Glowstone",
+  "screen.anchor-macro.safe_anchor": "%s Safe Anchor",
+  "screen.anchor-macro.safe_slot": "Hotbar slot after Safe Anchor",
+  "screen.anchor-macro.selected_slot": "Selected slot: %s"
+}
