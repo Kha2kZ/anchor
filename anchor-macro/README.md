@@ -33,9 +33,12 @@ charging the anchor again. If neither position is replaceable with a solid
 block below it, it leaves the selected slot set to your configured slot and
 shows a message instead of guessing.
 
-There is no macro cooldown between anchor placements. Each placement starts its
-sequence on the next client tick, subject only to server latency, interaction
-rules, or anti-cheat limits.
+There is no fixed macro cooldown between anchor placements. Placements are
+queued so rapid anchor spam is not overwritten. Each anchor sends its charge
+request only once and waits for the client to observe the server-confirmed
+charge before continuing. Full Safe Anchor also waits for the server-confirmed
+Glowstone defense before detonating. Server latency and anti-cheat limits can
+still determine the practical rate.
 
 ## Enable and disable
 

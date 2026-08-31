@@ -339,8 +339,8 @@ public final class AnchorMacroActions {
             this.nextActionAtNanos = System.nanoTime() + millisecondsToNanos(this.chargeDelayMs);
         }
 
-        private boolean isReady() {
-            return System.nanoTime() >= nextActionAtNanos;
+        private boolean isReady(long now) {
+            return now >= nextActionAtNanos;
         }
 
         private void waitFor(int delayMs) {
