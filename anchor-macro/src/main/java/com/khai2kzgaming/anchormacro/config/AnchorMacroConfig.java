@@ -14,6 +14,7 @@ public final class AnchorMacroConfig {
             .getConfigDir()
             .resolve("anchor-macro.json");
 
+    public boolean enabled = true;
     public Mode mode = Mode.AUTO_GLOWSTONE;
     public int safeHotbarSlot = 0;
 
@@ -54,6 +55,8 @@ public final class AnchorMacroConfig {
 
     public enum Mode {
         AUTO_GLOWSTONE,
-        SAFE_ANCHOR
+        SAFE_ANCHOR,
+        FULL_SAFE_ANCHOR,
+        FULL_ANCHOR
     }
 }

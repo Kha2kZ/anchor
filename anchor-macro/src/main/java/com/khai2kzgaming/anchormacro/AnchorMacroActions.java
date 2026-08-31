@@ -27,6 +27,10 @@ public final class AnchorMacroActions {
     }
 
     public static void onAnchorPlaced(BlockPos anchorPos) {
+        if (!AnchorMacroClient.CONFIG.enabled) {
+            return;
+        }
+
         pendingAction = new PendingAction(
                 anchorPos.toImmutable(),
                 AnchorMacroClient.CONFIG.mode,
@@ -81,7 +85,11 @@ public final class AnchorMacroActions {
                 return;
             }
 
-            action.stage = Stage.PLACE_SHIELD;
+            if (action.mode == AnchorMacroConfig.Mode.FULL_ANCHOR) {
+                action.stage = Stage.EXPLODE_ANCHOR;
+            } else {
+                action.stage = Stage.PLACE_SHIELD;
+            }
             action.waitTicks = 1;
             return;
         }
@@ -111,6 +119,22 @@ public final class AnchorMacroActions {
             client.player.getInventory().selectedSlot = action.safeHotbarSlot;
             if (!result.isAccepted()) {
                 notify(client, "Anchor Macro: Glowstone shield placement failed.");
+                pendingAction = null;
+                return;
+            }
+
+            if (action.mode == AnchorMacroConfig.Mode.FULL_SAFE_ANCHOR) {
+                action.stage = Stage.EXPLODE_ANCHOR;
+                action.waitTicks = 1;
+                return;
+            }
+            pendingAction = null;
+        }
+
+        if (action.stage == Stage.EXPLODE_ANCHOR) {
+            ActionResult result = interactWithAnchor(client, action.anchorPos);
+            if (!result.isAccepted()) {
+                notify(client, "Anchor Macro: could not activate the charged anchor.");
             }
             pendingAction = null;
         }
@@ -183,7 +207,8 @@ public final class AnchorMacroActions {
 
     private enum Stage {
         CHARGE_ANCHOR,
-        PLACE_SHIELD
+        PLACE_SHIELD,
+        EXPLODE_ANCHOR
     }
 
     private static final class PendingAction {

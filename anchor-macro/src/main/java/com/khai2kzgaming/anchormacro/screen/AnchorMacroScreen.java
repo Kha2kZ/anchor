@@ -22,14 +22,29 @@ public final class AnchorMacroScreen extends Screen {
         int buttonX = centerX - buttonWidth / 2;
 
         addDrawableChild(ButtonWidget.builder(
+                modToggleLabel(),
+                button -> toggleMod()
+        ).dimensions(buttonX, 45, buttonWidth, 20).build());
+
+        addDrawableChild(ButtonWidget.builder(
                 modeLabel(AnchorMacroConfig.Mode.AUTO_GLOWSTONE),
                 button -> setMode(AnchorMacroConfig.Mode.AUTO_GLOWSTONE)
-        ).dimensions(buttonX, 55, buttonWidth, 20).build());
+        ).dimensions(buttonX, 70, buttonWidth, 20).build());
 
         addDrawableChild(ButtonWidget.builder(
                 modeLabel(AnchorMacroConfig.Mode.SAFE_ANCHOR),
                 button -> setMode(AnchorMacroConfig.Mode.SAFE_ANCHOR)
-        ).dimensions(buttonX, 80, buttonWidth, 20).build());
+        ).dimensions(buttonX, 95, buttonWidth, 20).build());
+
+        addDrawableChild(ButtonWidget.builder(
+                modeLabel(AnchorMacroConfig.Mode.FULL_SAFE_ANCHOR),
+                button -> setMode(AnchorMacroConfig.Mode.FULL_SAFE_ANCHOR)
+        ).dimensions(buttonX, 120, buttonWidth, 20).build());
+
+        addDrawableChild(ButtonWidget.builder(
+                modeLabel(AnchorMacroConfig.Mode.FULL_ANCHOR),
+                button -> setMode(AnchorMacroConfig.Mode.FULL_ANCHOR)
+        ).dimensions(buttonX, 145, buttonWidth, 20).build());
 
         int slotButtonWidth = 24;
         int slotsStartX = centerX - (slotButtonWidth * 9 + 4 * 8) / 2;
@@ -39,13 +54,13 @@ public final class AnchorMacroScreen extends Screen {
             addDrawableChild(ButtonWidget.builder(
                     Text.literal(Integer.toString(slot + 1)),
                     button -> setSafeHotbarSlot(selectedSlot)
-            ).dimensions(x, 130, slotButtonWidth, 20).build());
+            ).dimensions(x, 205, slotButtonWidth, 20).build());
         }
 
         addDrawableChild(ButtonWidget.builder(
                 Text.translatable("gui.done"),
                 button -> close()
-        ).dimensions(buttonX, 175, buttonWidth, 20).build());
+        ).dimensions(buttonX, 245, buttonWidth, 20).build());
     }
 
     @Override
@@ -60,14 +75,14 @@ public final class AnchorMacroScreen extends Screen {
                 this.textRenderer,
                 this.title,
                 this.width / 2,
-                25,
+                20,
                 0xFFFFFF
         );
         context.drawCenteredTextWithShadow(
                 this.textRenderer,
                 Text.translatable("screen.anchor-macro.safe_slot"),
                 this.width / 2,
-                115,
+                185,
                 0xFFFFFF
         );
         context.drawCenteredTextWithShadow(
@@ -75,22 +90,44 @@ public final class AnchorMacroScreen extends Screen {
                 Text.translatable("screen.anchor-macro.selected_slot",
                         AnchorMacroClient.CONFIG.safeHotbarSlot + 1),
                 this.width / 2,
-                160,
+                235,
                 0xAAAAAA
         );
         super.render(context, mouseX, mouseY, delta);
     }
 
     private Text modeLabel(AnchorMacroConfig.Mode mode) {
-        boolean selected = AnchorMacroClient.CONFIG.mode == mode;
-        String key = mode == AnchorMacroConfig.Mode.AUTO_GLOWSTONE
-                ? "screen.anchor-macro.auto_glowstone"
-                : "screen.anchor-macro.safe_anchor";
-        return Text.translatable(key, selected ? "✓" : "");
+        boolean selected = AnchorMacroClient.CONFIG.enabled
+                && AnchorMacroClient.CONFIG.mode == mode;
+        String key = switch (mode) {
+            case AUTO_GLOWSTONE -> "screen.anchor-macro.auto_glowstone";
+            case SAFE_ANCHOR -> "screen.anchor-macro.safe_anchor";
+            case FULL_SAFE_ANCHOR -> "screen.anchor-macro.full_safe_anchor";
+            case FULL_ANCHOR -> "screen.anchor-macro.full_anchor";
+        };
+        return Text.translatable(key, selected ? "ON" : "OFF");
+    }
+
+    private Text modToggleLabel() {
+        return Text.translatable(
+                "screen.anchor-macro.mod_toggle",
+                AnchorMacroClient.CONFIG.enabled ? "ON" : "OFF"
+        );
+    }
+
+    private void toggleMod() {
+        AnchorMacroClient.CONFIG.enabled = !AnchorMacroClient.CONFIG.enabled;
+        AnchorMacroClient.CONFIG.save();
+        clearAndInit();
     }
 
     private void setMode(AnchorMacroConfig.Mode mode) {
-        AnchorMacroClient.CONFIG.mode = mode;
+        if (AnchorMacroClient.CONFIG.mode == mode) {
+            AnchorMacroClient.CONFIG.enabled = !AnchorMacroClient.CONFIG.enabled;
+        } else {
+            AnchorMacroClient.CONFIG.mode = mode;
+            AnchorMacroClient.CONFIG.enabled = true;
+        }
         AnchorMacroClient.CONFIG.save();
         clearAndInit();
     }
