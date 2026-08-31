@@ -1,6 +1,8 @@
 package com.khai2kzgaming.anchormacro;
 
 import com.khai2kzgaming.anchormacro.config.AnchorMacroConfig;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Optional;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.RespawnAnchorBlock;
@@ -17,7 +19,9 @@ import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
 public final class AnchorMacroActions {
-    private static PendingAction pendingAction;
+    private static final int MAX_QUEUED_ACTIONS = 64;
+    private static final long SERVER_ACK_TIMEOUT_NANOS = 2_000_000_000L;
+    private static final Deque<PendingAction> pendingActions = new ArrayDeque<>();
 
     private AnchorMacroActions() {
     }
@@ -31,72 +35,131 @@ public final class AnchorMacroActions {
             return;
         }
 
-        pendingAction = new PendingAction(
-                anchorPos.toImmutable(),
-                AnchorMacroClient.CONFIG.mode,
-                AnchorMacroClient.CONFIG.safeHotbarSlot,
-                AnchorMacroClient.CONFIG.chargeDelayMs,
-                AnchorMacroClient.CONFIG.defenseDelayMs
-        );
+        if (pendingActions.size() >= MAX_QUEUED_ACTIONS) {
+            return;
+        }
+
+        pendingActions.addLast(new PendingAction(
+                    anchorPos.toImmutable(),
+                    AnchorMacroClient.CONFIG.mode,
+                    AnchorMacroClient.CONFIG.safeHotbarSlot,
+                    AnchorMacroClient.CONFIG.chargeDelayMs,
+                    AnchorMacroClient.CONFIG.defenseDelayMs
+            ));
     }
 
     public static void tick(MinecraftClient client) {
-        if (pendingAction == null || client.player == null || client.world == null) {
+        if (!AnchorMacroClient.CONFIG.enabled) {
+            pendingActions.clear();
+            return;
+        }
+
+        if (pendingActions.isEmpty() || client.player == null || client.world == null) {
             return;
         }
 
         if (client.interactionManager == null) {
-            pendingAction = null;
+            pendingActions.clear();
             return;
         }
 
-        PendingAction action = pendingAction;
-        if (!action.isReady()) {
-            return;
-        }
+        PendingAction action = pendingActions.peekFirst();
+        long now = System.nanoTime();
 
         if (!isRespawnAnchor(client.world, action.anchorPos)) {
-            if (++action.confirmationTicks > 10) {
+            if (++action.confirmationTicks > 20) {
                 notify(client, "Anchor Macro: anchor placement was not confirmed.");
-                pendingAction = null;
+                complete(action);
             }
+            return;
+        }
+
+        if (!action.isReady(now)) {
             return;
         }
 
         if (action.stage == Stage.CHARGE_ANCHOR) {
-            if (!selectHotbarItem(client.player, Items.GLOWSTONE)) {
-                notify(client, "Anchor Macro: no Glowstone found in the hotbar.");
-                pendingAction = null;
-                return;
-            }
-
             int charges = client.world.getBlockState(action.anchorPos)
                     .get(RespawnAnchorBlock.CHARGES);
-            if (charges < RespawnAnchorBlock.MAX_CHARGES) {
-                ActionResult result = interactWithAnchor(client, action.anchorPos);
-                if (!result.isAccepted()) {
-                    notify(client, "Anchor Macro: could not charge the anchor.");
-                    pendingAction = null;
+
+            if (action.chargeRequested) {
+                if (charges > action.chargesBeforeRequest
+                        || charges >= RespawnAnchorBlock.MAX_CHARGES) {
+                    if (action.mode == AnchorMacroConfig.Mode.AUTO_GLOWSTONE) {
+                        complete(action);
+                        return;
+                    }
+
+                    if (action.mode == AnchorMacroConfig.Mode.FULL_ANCHOR) {
+                        client.player.getInventory().selectedSlot = action.safeHotbarSlot;
+                        action.stage = Stage.EXPLODE_ANCHOR;
+                    } else {
+                        action.stage = Stage.PLACE_SHIELD;
+                    }
+                    action.waitFor(action.defenseDelayMs);
                     return;
                 }
-            }
 
-            if (action.mode == AnchorMacroConfig.Mode.AUTO_GLOWSTONE) {
-                pendingAction = null;
+                if (now - action.chargeRequestedAtNanos > SERVER_ACK_TIMEOUT_NANOS) {
+                    notify(client, "Anchor Macro: server did not confirm the charge.");
+                    complete(action);
+                }
                 return;
             }
 
-            if (action.mode == AnchorMacroConfig.Mode.FULL_ANCHOR) {
-                client.player.getInventory().selectedSlot = action.safeHotbarSlot;
-                action.stage = Stage.EXPLODE_ANCHOR;
-            } else {
-                action.stage = Stage.PLACE_SHIELD;
+            if (!action.isReady(now)) {
+                return;
             }
-            action.waitFor(action.defenseDelayMs);
+
+            if (!selectHotbarItem(client.player, Items.GLOWSTONE)) {
+                notify(client, "Anchor Macro: no Glowstone found in the hotbar.");
+                complete(action);
+                return;
+            }
+
+            if (charges >= RespawnAnchorBlock.MAX_CHARGES) {
+                action.chargeRequested = true;
+                action.chargesBeforeRequest = charges;
+                action.chargeRequestedAtNanos = now;
+                return;
+            }
+
+            ActionResult result = interactWithAnchor(client, action.anchorPos);
+            if (!result.isAccepted()) {
+                notify(client, "Anchor Macro: could not charge the anchor.");
+                complete(action);
+                return;
+            }
+
+            action.chargeRequested = true;
+            action.chargesBeforeRequest = charges;
+            action.chargeRequestedAtNanos = now;
             return;
         }
 
         if (action.stage == Stage.PLACE_SHIELD) {
+            if (action.shieldRequested) {
+                if (client.world.getBlockState(action.shieldTarget).isOf(Blocks.GLOWSTONE)) {
+                    if (action.mode == AnchorMacroConfig.Mode.FULL_SAFE_ANCHOR) {
+                        action.stage = Stage.EXPLODE_ANCHOR;
+                        action.waitFor(action.defenseDelayMs);
+                        return;
+                    }
+                    complete(action);
+                    return;
+                }
+
+                if (now - action.shieldRequestedAtNanos > SERVER_ACK_TIMEOUT_NANOS) {
+                    notify(client, "Anchor Macro: server did not confirm the Glowstone defense.");
+                    complete(action);
+                }
+                return;
+            }
+
+            if (!action.isReady(now)) {
+                return;
+            }
+
             Optional<ShieldPlacement> placement = findShieldPlacement(
                     client.world,
                     client.player,
@@ -105,14 +168,14 @@ public final class AnchorMacroActions {
             if (placement.isEmpty()) {
                 notify(client, "Anchor Macro: no supported space in front of you for Glowstone.");
                 client.player.getInventory().selectedSlot = action.safeHotbarSlot;
-                pendingAction = null;
+                complete(action);
                 return;
             }
 
             if (!selectHotbarItem(client.player, Items.GLOWSTONE)) {
                 notify(client, "Anchor Macro: no Glowstone found for the shield.");
                 client.player.getInventory().selectedSlot = action.safeHotbarSlot;
-                pendingAction = null;
+                complete(action);
                 return;
             }
 
@@ -125,24 +188,32 @@ public final class AnchorMacroActions {
             client.player.getInventory().selectedSlot = action.safeHotbarSlot;
             if (!result.isAccepted()) {
                 notify(client, "Anchor Macro: Glowstone shield placement failed.");
-                pendingAction = null;
+                complete(action);
                 return;
             }
 
-            if (action.mode == AnchorMacroConfig.Mode.FULL_SAFE_ANCHOR) {
-                action.stage = Stage.EXPLODE_ANCHOR;
-                action.waitFor(action.defenseDelayMs);
-                return;
-            }
-            pendingAction = null;
+            action.shieldTarget = shield.target;
+            action.shieldRequested = true;
+            action.shieldRequestedAtNanos = now;
+            return;
         }
 
         if (action.stage == Stage.EXPLODE_ANCHOR) {
+            if (!action.isReady(now)) {
+                return;
+            }
+
             ActionResult result = interactWithAnchor(client, action.anchorPos);
             if (!result.isAccepted()) {
                 notify(client, "Anchor Macro: could not activate the charged anchor.");
             }
-            pendingAction = null;
+            complete(action);
+        }
+    }
+
+    private static void complete(PendingAction action) {
+        if (pendingActions.peekFirst() == action) {
+            pendingActions.removeFirst();
         }
     }
 
@@ -245,6 +316,12 @@ public final class AnchorMacroActions {
         private final int defenseDelayMs;
         private Stage stage = Stage.CHARGE_ANCHOR;
         private int confirmationTicks;
+        private boolean chargeRequested;
+        private int chargesBeforeRequest;
+        private long chargeRequestedAtNanos;
+        private boolean shieldRequested;
+        private BlockPos shieldTarget;
+        private long shieldRequestedAtNanos;
         private long nextActionAtNanos;
 
         private PendingAction(
