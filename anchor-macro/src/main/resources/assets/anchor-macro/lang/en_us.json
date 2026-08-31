@@ -1,7 +1,13 @@
 {
   "category.anchor-macro": "Anchor Macro",
   "key.anchor-macro.open_menu": "Open Anchor Macro menu",
+  "key.anchor-macro.toggle_auto_glowstone": "Toggle Auto Glowstone",
+  "key.anchor-macro.toggle_safe_anchor": "Toggle Safe Anchor",
+  "key.anchor-macro.toggle_full_safe_anchor": "Toggle Full Safe Anchor",
+  "key.anchor-macro.toggle_full_anchor": "Toggle Full Anchor",
   "screen.anchor-macro.title": "Anchor Macro",
+  "screen.anchor-macro.generic_tab": "Generic",
+  "screen.anchor-macro.keybinds_tab": "Keybinds",
   "screen.anchor-macro.mod_toggle": "Anchor Macro: %s",
   "screen.anchor-macro.auto_glowstone": "Auto Glowstone: %s",
   "screen.anchor-macro.safe_anchor": "Safe Anchor: %s",
@@ -9,4 +15,10 @@
   "screen.anchor-macro.full_anchor": "Full Anchor: %s",
   "screen.anchor-macro.safe_slot": "Hotbar slot after Safe Anchor",
   "screen.anchor-macro.selected_slot": "Selected slot: %s"
+  ,"screen.anchor-macro.open_controls": "Open Minecraft Controls",
+  "screen.anchor-macro.keybind_help": "Set primary keys in Minecraft Controls; optional modifiers below make chords.",
+  "screen.anchor-macro.modifier": "%s modifier: %s | primary: %s",
+  "screen.anchor-macro.clear_modifier": "Clear",
+  "screen.anchor-macro.press_modifier": "Press modifier key",
+  "screen.anchor-macro.none": "NONE"
 }
