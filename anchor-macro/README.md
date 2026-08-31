@@ -1,7 +1,6 @@
 # Anchor Macro
 
-A client-side Fabric mod for Minecraft 1.20.6 that automates the safe setup
-steps around Respawn Anchors.
+A macro anchor mod with full of constant anchor spam.
 
 ## Modes
 
@@ -14,8 +13,8 @@ rest of the sequence.
 ### Safe Anchor
 
 After placing an anchor, the mod switches to Glowstone, charges the anchor,
-places a Glowstone block in a supported space directly in front of you, and
-switches back to the configured hotbar slot.
+places a Glowstone block in a supported space in front of you at the anchor's
+level when possible, and switches back to the configured hotbar slot.
 
 ### Full Safe Anchor
 
@@ -27,9 +26,16 @@ the protective Glowstone placement fails.
 
 Switches to Glowstone, charges the anchor, and activates it automatically.
 
-The shield placement checks one and two blocks ahead. If neither position is
-replaceable with a solid block below it, it leaves the selected slot set to
-your configured slot and shows a message instead of guessing.
+The shield placement checks one and two blocks ahead, preferring the anchor's
+level when you are standing at a different height. It will not click the
+Respawn Anchor as the support block, preventing an elevated setup from
+charging the anchor again. If neither position is replaceable with a solid
+block below it, it leaves the selected slot set to your configured slot and
+shows a message instead of guessing.
+
+There is no macro cooldown between anchor placements. Each placement starts its
+sequence on the next client tick, subject only to server latency, interaction
+rules, or anti-cheat limits.
 
 ## Enable and disable
 

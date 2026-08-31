@@ -49,13 +49,8 @@ public final class AnchorMacroActions {
         }
 
         PendingAction action = pendingAction;
-        if (action.waitTicks > 0) {
-            action.waitTicks--;
-            return;
-        }
-
         if (!isRespawnAnchor(client.world, action.anchorPos)) {
-            if (++action.waitTicks > 10) {
+            if (++action.confirmationTicks > 10) {
                 notify(client, "Anchor Macro: anchor placement was not confirmed.");
                 pendingAction = null;
             }
@@ -86,16 +81,20 @@ public final class AnchorMacroActions {
             }
 
             if (action.mode == AnchorMacroConfig.Mode.FULL_ANCHOR) {
+                client.player.getInventory().selectedSlot = action.safeHotbarSlot;
                 action.stage = Stage.EXPLODE_ANCHOR;
             } else {
                 action.stage = Stage.PLACE_SHIELD;
             }
-            action.waitTicks = 1;
             return;
         }
 
         if (action.stage == Stage.PLACE_SHIELD) {
-            Optional<ShieldPlacement> placement = findShieldPlacement(client.world, client.player);
+            Optional<ShieldPlacement> placement = findShieldPlacement(
+                    client.world,
+                    client.player,
+                    action.anchorPos
+            );
             if (placement.isEmpty()) {
                 notify(client, "Anchor Macro: no supported space in front of you for Glowstone.");
                 client.player.getInventory().selectedSlot = action.safeHotbarSlot;
@@ -125,7 +124,6 @@ public final class AnchorMacroActions {
 
             if (action.mode == AnchorMacroConfig.Mode.FULL_SAFE_ANCHOR) {
                 action.stage = Stage.EXPLODE_ANCHOR;
-                action.waitTicks = 1;
                 return;
             }
             pendingAction = null;
@@ -174,26 +172,46 @@ public final class AnchorMacroActions {
 
     private static Optional<ShieldPlacement> findShieldPlacement(
             ClientWorld world,
-            ClientPlayerEntity player
+            ClientPlayerEntity player,
+            BlockPos anchorPos
     ) {
         Direction facing = player.getHorizontalFacing();
         BlockPos base = player.getBlockPos();
+        int playerY = base.getY();
+        int anchorY = anchorPos.getY();
 
-        for (int distance = 1; distance <= 2; distance++) {
-            BlockPos target = base.offset(facing, distance);
-            BlockPos support = target.down();
-            if (!world.getBlockState(target).isReplaceable()
-                    || world.getBlockState(support).isAir()) {
-                continue;
+        // When the player is standing above or below the anchor, prefer the
+        // anchor's level so the defense is not placed at the player's feet.
+        int[] candidateLevels = anchorY == playerY
+                ? new int[]{playerY}
+                : new int[]{anchorY, playerY};
+
+        for (int level : candidateLevels) {
+            for (int distance = 1; distance <= 2; distance++) {
+                BlockPos target = new BlockPos(
+                        base.getX() + facing.getOffsetX() * distance,
+                        level,
+                        base.getZ() + facing.getOffsetZ() * distance
+                );
+                if (target.equals(anchorPos)) {
+                    continue;
+                }
+
+                BlockPos support = target.down();
+                if (!world.getBlockState(target).isReplaceable()
+                        || support.equals(anchorPos)
+                        || !world.getBlockState(support).isSolidBlock(world, support)) {
+                    continue;
+                }
+
+                BlockHitResult hit = new BlockHitResult(
+                        Vec3d.ofCenter(support).add(0.0, 0.5, 0.0),
+                        Direction.UP,
+                        support,
+                        false
+                );
+                return Optional.of(new ShieldPlacement(target, hit));
             }
-
-            BlockHitResult hit = new BlockHitResult(
-                    Vec3d.ofCenter(support).add(0.0, 0.5, 0.0),
-                    Direction.UP,
-                    support,
-                    false
-            );
-            return Optional.of(new ShieldPlacement(target, hit));
         }
 
         return Optional.empty();
@@ -216,7 +234,7 @@ public final class AnchorMacroActions {
         private final AnchorMacroConfig.Mode mode;
         private final int safeHotbarSlot;
         private Stage stage = Stage.CHARGE_ANCHOR;
-        private int waitTicks = 1;
+        private int confirmationTicks;
 
         private PendingAction(
                 BlockPos anchorPos,

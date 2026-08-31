@@ -3,7 +3,7 @@
   "id": "anchor-macro",
   "version": "${version}",
   "name": "Anchor Macro",
-  "description": "Client-side macros for charging Respawn Anchors and placing a protective Glowstone block.",
+  "description": "A macro anchor mod with full of constant anchor spam.",
   "authors": [
     "khai2kzgaming"
   ],
