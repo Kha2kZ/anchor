@@ -6,16 +6,13 @@ import java.util.Deque;
 import java.util.Iterator;
 import java.util.Optional;
 import net.minecraft.block.BlockState;
-import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.RespawnAnchorBlock;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.world.ClientWorld;
-import net.minecraft.item.BlockItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
-import net.minecraft.item.ItemStack;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
@@ -28,7 +25,7 @@ public final class AnchorMacroActions {
     private static final int MAX_QUEUED_ACTIONS = 64;
     private static final long SERVER_ACK_TIMEOUT_TICKS = 40L;
     private static final long RETRY_DELAY_TICKS = 2L;
-    private static final long PLACEMENT_ATTEMPT_TIMEOUT_TICKS = 100L;
+    private static final long PLACEMENT_ATTEMPT_TIMEOUT_TICKS = 200L;
     private static final Deque<PendingAction> pendingActions = new ArrayDeque<>();
     private static final Deque<PlacementAttempt> placementAttempts = new ArrayDeque<>();
     private static boolean internalAnchorInteraction;
@@ -51,6 +48,7 @@ public final class AnchorMacroActions {
         }
 
         BlockPos immutablePos = anchorPos.toImmutable();
+        forgetFinishedActionAt(immutablePos);
         if (hasTrackedAnchor(immutablePos)) {
             return;
         }
@@ -62,6 +60,21 @@ public final class AnchorMacroActions {
                 immutablePos,
                 clientTick + PLACEMENT_ATTEMPT_TIMEOUT_TICKS
         ));
+    }
+
+    private static void forgetFinishedActionAt(BlockPos anchorPos) {
+        Iterator<PendingAction> actions = pendingActions.iterator();
+        while (actions.hasNext()) {
+            PendingAction action = actions.next();
+            if (action.anchorPos.equals(anchorPos)
+                    && action.stage == Stage.EXPLODE_ANCHOR
+                    && action.explosionRequested) {
+                // The player has started placing the next anchor at this
+                // position. Do not let the previous completed explosion block
+                // the next action while its final update is being processed.
+                actions.remove();
+            }
+        }
     }
 
     private static boolean hasTrackedAnchor(BlockPos anchorPos) {
@@ -125,8 +138,7 @@ public final class AnchorMacroActions {
 
             if (action.shieldTarget != null
                     && action.shieldTarget.equals(pos)
-                    && action.defenseBlock != null
-                    && state.isOf(action.defenseBlock)
+                    && state.isOf(Blocks.GLOWSTONE)
                     && action.shieldRequested) {
                 action.shieldConfirmed = true;
             }
@@ -216,8 +228,7 @@ public final class AnchorMacroActions {
         if (action.stage == Stage.PLACE_SHIELD) {
             if (action.shieldRequested) {
                 if (action.shieldConfirmed
-                        || (action.defenseBlock != null
-                        && client.world.getBlockState(action.shieldTarget).isOf(action.defenseBlock))) {
+                        || client.world.getBlockState(action.shieldTarget).isOf(Blocks.GLOWSTONE)) {
                     if (action.mode == AnchorMacroConfig.Mode.FULL_SAFE_ANCHOR) {
                         action.stage = Stage.EXPLODE_ANCHOR;
                         action.waitFor(action.defenseDelayMs);
@@ -247,27 +258,15 @@ public final class AnchorMacroActions {
                 shield = placement.get();
                 action.shieldPlacement = shield;
             } else if (!client.world.getBlockState(shield.target).isReplaceable()
-                    && (action.defenseBlock == null
-                    || !client.world.getBlockState(shield.target).isOf(action.defenseBlock))) {
+                    && !client.world.getBlockState(shield.target).isOf(Blocks.GLOWSTONE)) {
                 defenseFailed(client, action);
                 return;
             }
 
-            int defenseSlot = action.defenseBlock == null
-                    ? findDefenseBlockSlot(client.player, action.safeHotbarSlot)
-                    : findHotbarBlock(client.player, action.defenseBlock);
-            if (defenseSlot < 0) {
+            if (!selectHotbarItem(client.player, Items.GLOWSTONE)) {
                 defenseFailed(client, action);
                 return;
             }
-            client.player.getInventory().selectedSlot = defenseSlot;
-            ItemStack defenseStack = client.player.getInventory().getStack(defenseSlot);
-            Block defenseBlock = getPlaceableDefenseBlock(defenseStack);
-            if (defenseBlock == null) {
-                defenseFailed(client, action);
-                return;
-            }
-            action.defenseBlock = defenseBlock;
 
             ActionResult result = client.interactionManager.interactBlock(
                     client.player,
@@ -427,55 +426,21 @@ public final class AnchorMacroActions {
             return Optional.empty();
         }
 
-        // The anchor is deliberately the support block. This works regardless
-        // of the player's camera aim because the packet contains this exact
-        // block position and face. The defense item must not be Glowstone:
-        // Glowstone would invoke the anchor and charge it again.
-        Vec3d hitPosition = Vec3d.ofCenter(anchorPos).add(
-                defenseDirection.getOffsetX() * 0.5,
-                0.0,
-                defenseDirection.getOffsetZ() * 0.5
-        );
+        // Click the solid ground below the adjacent target rather than the
+        // anchor. Clicking an anchor with Glowstone invokes its charge handler;
+        // clicking the ground's top face places Glowstone at the exact target.
+        BlockPos support = target.down();
+        if (!world.getBlockState(support).isSolidBlock(world, support)) {
+            return Optional.empty();
+        }
+        Vec3d hitPosition = Vec3d.ofCenter(support).add(0.0, 0.5, 0.0);
         BlockHitResult hit = new BlockHitResult(
                 hitPosition,
-                defenseDirection,
-                anchorPos,
+                Direction.UP,
+                support,
                 false
         );
         return Optional.of(new ShieldPlacement(target, hit));
-    }
-
-    private static int findDefenseBlockSlot(ClientPlayerEntity player, int preferredSlot) {
-        int clampedPreferredSlot = AnchorMacroConfig.clampHotbarSlot(preferredSlot);
-        if (getPlaceableDefenseBlock(player.getInventory().getStack(clampedPreferredSlot)) != null) {
-            return clampedPreferredSlot;
-        }
-        for (int slot = 0; slot < 9; slot++) {
-            if (getPlaceableDefenseBlock(player.getInventory().getStack(slot)) != null) {
-                return slot;
-            }
-        }
-        return -1;
-    }
-
-    private static int findHotbarBlock(ClientPlayerEntity player, Block block) {
-        for (int slot = 0; slot < 9; slot++) {
-            ItemStack stack = player.getInventory().getStack(slot);
-            if (getPlaceableDefenseBlock(stack) == block) {
-                return slot;
-            }
-        }
-        return -1;
-    }
-
-    private static Block getPlaceableDefenseBlock(ItemStack stack) {
-        if (!(stack.getItem() instanceof BlockItem blockItem)) {
-            return null;
-        }
-        Block block = blockItem.getBlock();
-        return block == Blocks.GLOWSTONE || block == Blocks.RESPAWN_ANCHOR
-                ? null
-                : block;
     }
 
     private static Direction findDefenseDirection(
@@ -523,7 +488,6 @@ public final class AnchorMacroActions {
         private boolean shieldConfirmed;
         private BlockPos shieldTarget;
         private ShieldPlacement shieldPlacement;
-        private Block defenseBlock;
         private long shieldRequestedAtTick;
         private int shieldRetries;
         private boolean explosionRequested;

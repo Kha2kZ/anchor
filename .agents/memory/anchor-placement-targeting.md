@@ -15,8 +15,8 @@ Placement detection and server-state acknowledgment must remain separate: enqueu
 
 **How to apply:** Match acknowledgments to the pending action's exact anchor or saved defense target, and keep retrying the same saved action when the server has not confirmed it.
 
-Defense placement must use a placeable non-Glowstone block when the Respawn Anchor is the support face; Glowstone on that face invokes the anchor instead of placing a defense block.
+When Glowstone is the required defense item, never click the Respawn Anchor to place it; click the solid ground block below the exact adjacent target and use its top face.
 
-**Why:** The anchor's normal block-use handler consumes Glowstone, so using it for the protective placement is indistinguishable from a second charge and can make Full Safe Anchor charge twice.
+**Why:** The anchor's normal block-use handler consumes Glowstone as a charge, while a ground-top interaction places Glowstone beside it without triggering another charge.
 
-**How to apply:** Prefer the configured hotbar slot, fall back to another placeable block, store that block for confirmation, and send the saved adjacent target and face directly so camera aim is irrelevant.
+**How to apply:** Save the player-facing horizontal side at anchor placement time, target that adjacent block at the anchor's level, and build the hit result from the support block below it so camera aim is irrelevant.
