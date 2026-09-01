@@ -20,7 +20,9 @@ import net.minecraft.util.math.Vec3d;
 
 public final class AnchorMacroActions {
     private static final int MAX_QUEUED_ACTIONS = 64;
+    private static final int MAX_ACTION_RETRIES = 3;
     private static final long SERVER_ACK_TIMEOUT_NANOS = 2_000_000_000L;
+    private static final long RETRY_DELAY_NANOS = 50_000_000L;
     private static final Deque<PendingAction> pendingActions = new ArrayDeque<>();
 
     private AnchorMacroActions() {
@@ -45,12 +47,18 @@ public final class AnchorMacroActions {
             }
         }
 
+        MinecraftClient client = MinecraftClient.getInstance();
+        Direction defenseDirection = client.player == null
+                ? Direction.NORTH
+                : findDefenseDirection(client.player, anchorPos);
+
         pendingActions.addLast(new PendingAction(
-                    anchorPos.toImmutable(),
-                    AnchorMacroClient.CONFIG.mode,
-                    AnchorMacroClient.CONFIG.safeHotbarSlot,
-                    AnchorMacroClient.CONFIG.chargeDelayMs,
-                    AnchorMacroClient.CONFIG.defenseDelayMs
+                anchorPos.toImmutable(),
+                AnchorMacroClient.CONFIG.mode,
+                AnchorMacroClient.CONFIG.safeHotbarSlot,
+                AnchorMacroClient.CONFIG.chargeDelayMs,
+                AnchorMacroClient.CONFIG.defenseDelayMs,
+                defenseDirection
             ));
     }
 
@@ -73,6 +81,10 @@ public final class AnchorMacroActions {
         long now = System.nanoTime();
 
         if (!isRespawnAnchor(client.world, action.anchorPos)) {
+            if (action.stage == Stage.EXPLODE_ANCHOR && action.explosionRequested) {
+                complete(action);
+                return;
+            }
             if (++action.confirmationTicks > 20) {
                 notify(client, "Anchor Macro: anchor placement was not confirmed.");
                 complete(action);
@@ -91,24 +103,12 @@ public final class AnchorMacroActions {
             if (action.chargeRequested) {
                 if (charges > action.chargesBeforeRequest
                         || charges >= RespawnAnchorBlock.MAX_CHARGES) {
-                    if (action.mode == AnchorMacroConfig.Mode.AUTO_GLOWSTONE) {
-                        complete(action);
-                        return;
-                    }
-
-                    if (action.mode == AnchorMacroConfig.Mode.FULL_ANCHOR) {
-                        client.player.getInventory().selectedSlot = action.safeHotbarSlot;
-                        action.stage = Stage.EXPLODE_ANCHOR;
-                    } else {
-                        action.stage = Stage.PLACE_SHIELD;
-                    }
-                    action.waitFor(action.defenseDelayMs);
+                    advanceAfterCharge(client, action);
                     return;
                 }
 
                 if (now - action.chargeRequestedAtNanos > SERVER_ACK_TIMEOUT_NANOS) {
-                    notify(client, "Anchor Macro: server did not confirm the charge.");
-                    complete(action);
+                    retryCharge(action, now);
                 }
                 return;
             }
@@ -124,9 +124,7 @@ public final class AnchorMacroActions {
             }
 
             if (charges >= RespawnAnchorBlock.MAX_CHARGES) {
-                action.chargeRequested = true;
-                action.chargesBeforeRequest = charges;
-                action.chargeRequestedAtNanos = now;
+                advanceAfterCharge(client, action);
                 return;
             }
 
@@ -156,8 +154,7 @@ public final class AnchorMacroActions {
                 }
 
                 if (now - action.shieldRequestedAtNanos > SERVER_ACK_TIMEOUT_NANOS) {
-                    notify(client, "Anchor Macro: server did not confirm the Glowstone defense.");
-                    complete(action);
+                    retryShield(client, action, now);
                 }
                 return;
             }
@@ -168,24 +165,21 @@ public final class AnchorMacroActions {
 
             Optional<ShieldPlacement> placement = findShieldPlacement(
                     client.world,
-                    client.player,
-                    action.anchorPos
+                    action.anchorPos,
+                    action.defenseDirection
             );
             if (placement.isEmpty()) {
-                notify(client, "Anchor Macro: no supported space in front of you for Glowstone.");
-                client.player.getInventory().selectedSlot = action.safeHotbarSlot;
-                complete(action);
+                defenseFailed(client, action);
                 return;
             }
 
             if (!selectHotbarItem(client.player, Items.GLOWSTONE)) {
-                notify(client, "Anchor Macro: no Glowstone found for the shield.");
-                client.player.getInventory().selectedSlot = action.safeHotbarSlot;
-                complete(action);
+                defenseFailed(client, action);
                 return;
             }
 
             ShieldPlacement shield = placement.get();
+            action.shieldPlacement = shield;
             ActionResult result = client.interactionManager.interactBlock(
                     client.player,
                     Hand.MAIN_HAND,
@@ -193,8 +187,7 @@ public final class AnchorMacroActions {
             );
             client.player.getInventory().selectedSlot = action.safeHotbarSlot;
             if (!result.isAccepted()) {
-                notify(client, "Anchor Macro: Glowstone shield placement failed.");
-                complete(action);
+                defenseFailed(client, action);
                 return;
             }
 
@@ -209,10 +202,75 @@ public final class AnchorMacroActions {
                 return;
             }
 
+            if (action.explosionRequested) {
+                if (now - action.explosionRequestedAtNanos > SERVER_ACK_TIMEOUT_NANOS) {
+                    retryExplosion(client, action, now);
+                }
+                return;
+            }
+
             ActionResult result = interactWithAnchor(client, action.anchorPos);
             if (!result.isAccepted()) {
-                notify(client, "Anchor Macro: could not activate the charged anchor.");
+                retryExplosion(client, action, now);
+                return;
             }
+            action.explosionRequested = true;
+            action.explosionRequestedAtNanos = now;
+        }
+    }
+
+    private static void advanceAfterCharge(MinecraftClient client, PendingAction action) {
+        if (action.mode == AnchorMacroConfig.Mode.AUTO_GLOWSTONE) {
+            complete(action);
+            return;
+        }
+
+        if (action.mode == AnchorMacroConfig.Mode.FULL_ANCHOR) {
+            client.player.getInventory().selectedSlot = action.safeHotbarSlot;
+            action.stage = Stage.EXPLODE_ANCHOR;
+        } else {
+            action.stage = Stage.PLACE_SHIELD;
+        }
+        action.waitFor(action.defenseDelayMs);
+    }
+
+    private static void retryCharge(PendingAction action, long now) {
+        if (action.chargeRetries >= MAX_ACTION_RETRIES) {
+            action.chargeRequested = false;
+            return;
+        }
+        action.chargeRetries++;
+        action.chargeRequested = false;
+        action.nextActionAtNanos = now + RETRY_DELAY_NANOS;
+    }
+
+    private static void retryShield(MinecraftClient client, PendingAction action, long now) {
+        if (action.shieldRetries >= MAX_ACTION_RETRIES || action.shieldPlacement == null) {
+            defenseFailed(client, action);
+            return;
+        }
+        action.shieldRetries++;
+        action.shieldRequested = false;
+        action.nextActionAtNanos = now + RETRY_DELAY_NANOS;
+    }
+
+    private static void retryExplosion(MinecraftClient client, PendingAction action, long now) {
+        if (action.explosionRetries >= MAX_ACTION_RETRIES) {
+            notify(client, "Anchor Macro: server did not confirm the detonation.");
+            complete(action);
+            return;
+        }
+        action.explosionRetries++;
+        action.explosionRequested = false;
+        action.nextActionAtNanos = now + RETRY_DELAY_NANOS;
+    }
+
+    private static void defenseFailed(MinecraftClient client, PendingAction action) {
+        client.player.getInventory().selectedSlot = action.safeHotbarSlot;
+        if (action.mode == AnchorMacroConfig.Mode.FULL_SAFE_ANCHOR) {
+            action.stage = Stage.EXPLODE_ANCHOR;
+            action.waitFor(action.defenseDelayMs);
+        } else {
             complete(action);
         }
     }
@@ -257,49 +315,41 @@ public final class AnchorMacroActions {
 
     private static Optional<ShieldPlacement> findShieldPlacement(
             ClientWorld world,
+            BlockPos anchorPos,
+            Direction defenseDirection
+    ) {
+        BlockPos target = anchorPos.offset(defenseDirection);
+        if (!world.getBlockState(target).isReplaceable()) {
+            return Optional.empty();
+        }
+
+        Vec3d hitPosition = Vec3d.ofCenter(anchorPos).add(
+                defenseDirection.getOffsetX() * 0.5,
+                0.0,
+                defenseDirection.getOffsetZ() * 0.5
+        );
+        BlockHitResult hit = new BlockHitResult(
+                hitPosition,
+                defenseDirection,
+                anchorPos,
+                false
+        );
+        return Optional.of(new ShieldPlacement(target, hit));
+    }
+
+    private static Direction findDefenseDirection(
             ClientPlayerEntity player,
             BlockPos anchorPos
     ) {
-        Direction facing = player.getHorizontalFacing();
-        BlockPos base = player.getBlockPos();
-        int playerY = base.getY();
-        int anchorY = anchorPos.getY();
-
-        // When the player is standing above or below the anchor, prefer the
-        // anchor's level so the defense is not placed at the player's feet.
-        int[] candidateLevels = anchorY == playerY
-                ? new int[]{playerY}
-                : new int[]{anchorY, playerY};
-
-        for (int level : candidateLevels) {
-            for (int distance = 1; distance <= 2; distance++) {
-                BlockPos target = new BlockPos(
-                        base.getX() + facing.getOffsetX() * distance,
-                        level,
-                        base.getZ() + facing.getOffsetZ() * distance
-                );
-                if (target.equals(anchorPos)) {
-                    continue;
-                }
-
-                BlockPos support = target.down();
-                if (!world.getBlockState(target).isReplaceable()
-                        || support.equals(anchorPos)
-                        || !world.getBlockState(support).isSolidBlock(world, support)) {
-                    continue;
-                }
-
-                BlockHitResult hit = new BlockHitResult(
-                        Vec3d.ofCenter(support).add(0.0, 0.5, 0.0),
-                        Direction.UP,
-                        support,
-                        false
-                );
-                return Optional.of(new ShieldPlacement(target, hit));
-            }
+        double deltaX = player.getX() - (anchorPos.getX() + 0.5);
+        double deltaZ = player.getZ() - (anchorPos.getZ() + 0.5);
+        if (Math.abs(deltaX) < 0.001 && Math.abs(deltaZ) < 0.001) {
+            return player.getHorizontalFacing().getOpposite();
         }
-
-        return Optional.empty();
+        if (Math.abs(deltaX) >= Math.abs(deltaZ)) {
+            return deltaX >= 0.0 ? Direction.EAST : Direction.WEST;
+        }
+        return deltaZ >= 0.0 ? Direction.SOUTH : Direction.NORTH;
     }
 
     private static void notify(MinecraftClient client, String message) {
