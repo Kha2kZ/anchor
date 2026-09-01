@@ -4,6 +4,7 @@ import com.khai2kzgaming.anchormacro.config.AnchorMacroConfig;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Optional;
+import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.RespawnAnchorBlock;
 import net.minecraft.client.MinecraftClient;
@@ -14,15 +15,15 @@ import net.minecraft.item.Items;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.math.Box;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
 public final class AnchorMacroActions {
     private static final int MAX_QUEUED_ACTIONS = 64;
-    private static final int MAX_ACTION_RETRIES = 3;
     private static final long SERVER_ACK_TIMEOUT_NANOS = 2_000_000_000L;
-    private static final long RETRY_DELAY_NANOS = 50_000_000L;
+    private static final long RETRY_DELAY_NANOS = 100_000_000L;
     private static final Deque<PendingAction> pendingActions = new ArrayDeque<>();
     private static boolean internalAnchorInteraction;
 
@@ -67,6 +68,29 @@ public final class AnchorMacroActions {
             ));
     }
 
+    public static void onServerBlockUpdate(BlockPos pos, BlockState state) {
+        for (PendingAction action : pendingActions) {
+            if (action.anchorPos.equals(pos)) {
+                if (state.isOf(Blocks.RESPAWN_ANCHOR)) {
+                    action.placementConfirmed = true;
+                    if (action.chargeRequested
+                            && state.get(RespawnAnchorBlock.CHARGES) > action.chargesBeforeRequest) {
+                        action.chargeConfirmed = true;
+                    }
+                } else if (action.stage == Stage.EXPLODE_ANCHOR && action.explosionRequested) {
+                    action.explosionConfirmed = true;
+                }
+            }
+
+            if (action.shieldTarget != null
+                    && action.shieldTarget.equals(pos)
+                    && state.isOf(Blocks.GLOWSTONE)
+                    && action.shieldRequested) {
+                action.shieldConfirmed = true;
+            }
+        }
+    }
+
     public static void tick(MinecraftClient client) {
         if (!AnchorMacroClient.CONFIG.enabled) {
             pendingActions.clear();
@@ -106,15 +130,18 @@ public final class AnchorMacroActions {
                     .get(RespawnAnchorBlock.CHARGES);
 
             if (action.chargeRequested) {
-                if (charges > action.chargesBeforeRequest
-                        || charges >= RespawnAnchorBlock.MAX_CHARGES) {
+                if (action.chargeConfirmed) {
                     advanceAfterCharge(client, action);
                     return;
                 }
 
                 if (now - action.chargeRequestedAtNanos > SERVER_ACK_TIMEOUT_NANOS) {
-                    retryCharge(client, action, now);
+                    retryCharge(action, now);
                 }
+                return;
+            }
+
+            if (!action.placementConfirmed) {
                 return;
             }
 
@@ -135,8 +162,7 @@ public final class AnchorMacroActions {
 
             ActionResult result = interactWithAnchor(client, action.anchorPos);
             if (!result.isAccepted()) {
-                notify(client, "Anchor Macro: could not charge the anchor.");
-                complete(action);
+                retryCharge(action, now);
                 return;
             }
 
@@ -148,7 +174,7 @@ public final class AnchorMacroActions {
 
         if (action.stage == Stage.PLACE_SHIELD) {
             if (action.shieldRequested) {
-                if (client.world.getBlockState(action.shieldTarget).isOf(Blocks.GLOWSTONE)) {
+                if (action.shieldConfirmed) {
                     if (action.mode == AnchorMacroConfig.Mode.FULL_SAFE_ANCHOR) {
                         action.stage = Stage.EXPLODE_ANCHOR;
                         action.waitFor(action.defenseDelayMs);
@@ -159,7 +185,7 @@ public final class AnchorMacroActions {
                 }
 
                 if (now - action.shieldRequestedAtNanos > SERVER_ACK_TIMEOUT_NANOS) {
-                    retryShield(client, action, now);
+                    retryShield(action, now);
                 }
                 return;
             }
@@ -168,12 +194,21 @@ public final class AnchorMacroActions {
                 return;
             }
 
-            Optional<ShieldPlacement> placement = findShieldPlacement(
-                    client.world,
-                    action.anchorPos,
-                    action.defenseDirection
-            );
-            if (placement.isEmpty()) {
+            ShieldPlacement shield = action.shieldPlacement;
+            if (shield == null) {
+                Optional<ShieldPlacement> placement = findShieldPlacement(
+                        client,
+                        action.anchorPos,
+                        action.defenseDirection
+                );
+                if (placement.isEmpty()) {
+                    defenseFailed(client, action);
+                    return;
+                }
+                shield = placement.get();
+                action.shieldPlacement = shield;
+            } else if (!client.world.getBlockState(shield.target).isReplaceable()
+                    && !client.world.getBlockState(shield.target).isOf(Blocks.GLOWSTONE)) {
                 defenseFailed(client, action);
                 return;
             }
@@ -183,8 +218,6 @@ public final class AnchorMacroActions {
                 return;
             }
 
-            ShieldPlacement shield = placement.get();
-            action.shieldPlacement = shield;
             ActionResult result = client.interactionManager.interactBlock(
                     client.player,
                     Hand.MAIN_HAND,
@@ -192,12 +225,13 @@ public final class AnchorMacroActions {
             );
             client.player.getInventory().selectedSlot = action.safeHotbarSlot;
             if (!result.isAccepted()) {
-                defenseFailed(client, action);
+                retryShield(action, now);
                 return;
             }
 
             action.shieldTarget = shield.target;
             action.shieldRequested = true;
+            action.shieldConfirmed = false;
             action.shieldRequestedAtNanos = now;
             return;
         }
@@ -208,18 +242,23 @@ public final class AnchorMacroActions {
             }
 
             if (action.explosionRequested) {
+                if (action.explosionConfirmed) {
+                    complete(action);
+                    return;
+                }
                 if (now - action.explosionRequestedAtNanos > SERVER_ACK_TIMEOUT_NANOS) {
-                    retryExplosion(client, action, now);
+                    retryExplosion(action, now);
                 }
                 return;
             }
 
             ActionResult result = interactWithAnchor(client, action.anchorPos);
             if (!result.isAccepted()) {
-                retryExplosion(client, action, now);
+                retryExplosion(action, now);
                 return;
             }
             action.explosionRequested = true;
+            action.explosionConfirmed = false;
             action.explosionRequestedAtNanos = now;
         }
     }
@@ -239,35 +278,24 @@ public final class AnchorMacroActions {
         action.waitFor(action.defenseDelayMs);
     }
 
-    private static void retryCharge(MinecraftClient client, PendingAction action, long now) {
-        if (action.chargeRetries >= MAX_ACTION_RETRIES) {
-            notify(client, "Anchor Macro: server did not confirm the charge.");
-            complete(action);
-            return;
-        }
+    private static void retryCharge(PendingAction action, long now) {
         action.chargeRetries++;
         action.chargeRequested = false;
+        action.chargeConfirmed = false;
         action.nextActionAtNanos = now + RETRY_DELAY_NANOS;
     }
 
-    private static void retryShield(MinecraftClient client, PendingAction action, long now) {
-        if (action.shieldRetries >= MAX_ACTION_RETRIES || action.shieldPlacement == null) {
-            defenseFailed(client, action);
-            return;
-        }
+    private static void retryShield(PendingAction action, long now) {
         action.shieldRetries++;
         action.shieldRequested = false;
+        action.shieldConfirmed = false;
         action.nextActionAtNanos = now + RETRY_DELAY_NANOS;
     }
 
-    private static void retryExplosion(MinecraftClient client, PendingAction action, long now) {
-        if (action.explosionRetries >= MAX_ACTION_RETRIES) {
-            notify(client, "Anchor Macro: server did not confirm the detonation.");
-            complete(action);
-            return;
-        }
+    private static void retryExplosion(PendingAction action, long now) {
         action.explosionRetries++;
         action.explosionRequested = false;
+        action.explosionConfirmed = false;
         action.nextActionAtNanos = now + RETRY_DELAY_NANOS;
     }
 
@@ -292,9 +320,19 @@ public final class AnchorMacroActions {
     }
 
     private static ActionResult interactWithAnchor(MinecraftClient client, BlockPos anchorPos) {
+        Vec3d hitPosition = Vec3d.ofCenter(anchorPos);
+        Direction hitSide = Direction.UP;
+        if (client.player != null) {
+            hitSide = findDefenseDirection(client.player, anchorPos);
+            hitPosition = hitPosition.add(
+                    hitSide.getOffsetX() * 0.5,
+                    0.0,
+                    hitSide.getOffsetZ() * 0.5
+            );
+        }
         BlockHitResult hit = new BlockHitResult(
-                Vec3d.ofCenter(anchorPos),
-                Direction.UP,
+                hitPosition,
+                hitSide,
                 anchorPos,
                 false
         );
@@ -325,12 +363,20 @@ public final class AnchorMacroActions {
     }
 
     private static Optional<ShieldPlacement> findShieldPlacement(
-            ClientWorld world,
+            MinecraftClient client,
             BlockPos anchorPos,
             Direction defenseDirection
     ) {
+        ClientWorld world = client.world;
+        if (world == null) {
+            return Optional.empty();
+        }
         BlockPos target = anchorPos.offset(defenseDirection);
         if (!world.getBlockState(target).isReplaceable()) {
+            return Optional.empty();
+        }
+        if (client.player != null
+                && client.player.getBoundingBox().intersects(new Box(target))) {
             return Optional.empty();
         }
 
@@ -384,16 +430,20 @@ public final class AnchorMacroActions {
         private final Direction defenseDirection;
         private Stage stage = Stage.CHARGE_ANCHOR;
         private int confirmationTicks;
+        private boolean placementConfirmed;
         private boolean chargeRequested;
+        private boolean chargeConfirmed;
         private int chargesBeforeRequest;
         private long chargeRequestedAtNanos;
         private int chargeRetries;
         private boolean shieldRequested;
+        private boolean shieldConfirmed;
         private BlockPos shieldTarget;
         private ShieldPlacement shieldPlacement;
         private long shieldRequestedAtNanos;
         private int shieldRetries;
         private boolean explosionRequested;
+        private boolean explosionConfirmed;
         private long explosionRequestedAtNanos;
         private int explosionRetries;
         private long nextActionAtNanos;
