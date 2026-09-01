@@ -8,6 +8,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(ClientWorld.class)
 public abstract class ClientWorldMixin {
@@ -19,5 +20,18 @@ public abstract class ClientWorldMixin {
             CallbackInfo callbackInfo
     ) {
         AnchorMacroActions.onServerBlockUpdate(pos, state);
+    }
+
+    @Inject(method = "setBlockState", at = @At("TAIL"))
+    private void anchorMacro$observeClientBlockStateChange(
+            BlockPos pos,
+            BlockState state,
+            int flags,
+            int maxUpdateDepth,
+            CallbackInfoReturnable<Boolean> callbackInfo
+    ) {
+        if (callbackInfo.getReturnValue()) {
+            AnchorMacroActions.onClientBlockStateChange(pos, state);
+        }
     }
 }

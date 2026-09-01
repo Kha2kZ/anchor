@@ -24,12 +24,14 @@ import net.minecraft.util.math.Vec3d;
 public final class AnchorMacroActions {
     private static final int MAX_QUEUED_ACTIONS = 64;
     private static final long SERVER_ACK_TIMEOUT_TICKS = 40L;
-    private static final long RETRY_DELAY_TICKS = 2L;
+    private static final long MIN_RETRY_DELAY_TICKS = 4L;
+    private static final int MAX_STAGE_RETRIES = 3;
     private static final long PLACEMENT_ATTEMPT_TIMEOUT_TICKS = 200L;
     private static final Deque<PendingAction> pendingActions = new ArrayDeque<>();
     private static final Deque<PlacementAttempt> placementAttempts = new ArrayDeque<>();
     private static boolean internalAnchorInteraction;
     private static long clientTick;
+    private static ClientWorld trackedWorld;
 
     private AnchorMacroActions() {
     }
@@ -123,6 +125,14 @@ public final class AnchorMacroActions {
     }
 
     public static void onServerBlockUpdate(BlockPos pos, BlockState state) {
+        observeBlockState(pos, state);
+    }
+
+    public static void onClientBlockStateChange(BlockPos pos, BlockState state) {
+        observeBlockState(pos, state);
+    }
+
+    private static void observeBlockState(BlockPos pos, BlockState state) {
         for (PendingAction action : pendingActions) {
             if (action.anchorPos.equals(pos)) {
                 if (state.isOf(Blocks.RESPAWN_ANCHOR)) {
@@ -146,6 +156,12 @@ public final class AnchorMacroActions {
     }
 
     public static void tick(MinecraftClient client) {
+        if (client.world != trackedWorld) {
+            pendingActions.clear();
+            placementAttempts.clear();
+            trackedWorld = client.world;
+            clientTick = 0L;
+        }
         clientTick++;
 
         if (!AnchorMacroClient.CONFIG.enabled) {
@@ -155,10 +171,13 @@ public final class AnchorMacroActions {
         }
 
         if (client.player == null || client.world == null) {
+            pendingActions.clear();
+            placementAttempts.clear();
             return;
         }
 
         queueConfirmedPlacements(client.world);
+        discardFinishedActions(client.world);
         if (pendingActions.isEmpty()) {
             return;
         }
@@ -196,8 +215,9 @@ public final class AnchorMacroActions {
                     return;
                 }
 
-                if (clientTick - action.chargeRequestedAtTick >= SERVER_ACK_TIMEOUT_TICKS) {
-                    retryCharge(action);
+                if (clientTick - action.chargeRequestedAtTick >= SERVER_ACK_TIMEOUT_TICKS
+                        && !retryCharge(action)) {
+                    complete(action);
                 }
                 return;
             }
@@ -215,7 +235,9 @@ public final class AnchorMacroActions {
 
             ActionResult result = interactWithAnchor(client, action.anchorPos, action.defenseDirection);
             if (!result.isAccepted()) {
-                retryCharge(action);
+                if (!retryCharge(action)) {
+                    complete(action);
+                }
                 return;
             }
 
@@ -238,8 +260,9 @@ public final class AnchorMacroActions {
                     return;
                 }
 
-                if (clientTick - action.shieldRequestedAtTick >= SERVER_ACK_TIMEOUT_TICKS) {
-                    retryShield(action);
+                if (clientTick - action.shieldRequestedAtTick >= SERVER_ACK_TIMEOUT_TICKS
+                        && !retryShield(action)) {
+                    defenseFailed(client, action);
                 }
                 return;
             }
@@ -275,7 +298,9 @@ public final class AnchorMacroActions {
             );
             client.player.getInventory().selectedSlot = action.safeHotbarSlot;
             if (!result.isAccepted()) {
-                retryShield(action);
+                if (!retryShield(action)) {
+                    defenseFailed(client, action);
+                }
                 return;
             }
 
@@ -292,15 +317,18 @@ public final class AnchorMacroActions {
                     complete(action);
                     return;
                 }
-                if (clientTick - action.explosionRequestedAtTick >= SERVER_ACK_TIMEOUT_TICKS) {
-                    retryExplosion(action);
+                if (clientTick - action.explosionRequestedAtTick >= SERVER_ACK_TIMEOUT_TICKS
+                        && !retryExplosion(action)) {
+                    complete(action);
                 }
                 return;
             }
 
             ActionResult result = interactWithAnchor(client, action.anchorPos, action.defenseDirection);
             if (!result.isAccepted()) {
-                retryExplosion(action);
+                if (!retryExplosion(action)) {
+                    complete(action);
+                }
                 return;
             }
             action.explosionRequested = true;
@@ -324,25 +352,55 @@ public final class AnchorMacroActions {
         action.waitFor(action.defenseDelayMs);
     }
 
-    private static void retryCharge(PendingAction action) {
-        action.chargeRetries++;
+    private static boolean retryCharge(PendingAction action) {
+        if (++action.chargeRetries > MAX_STAGE_RETRIES) {
+            return false;
+        }
         action.chargeRequested = false;
         action.chargeConfirmed = false;
-        action.nextActionAtTick = clientTick + RETRY_DELAY_TICKS;
+        action.nextActionAtTick = clientTick + retryDelayTicks(action);
+        return true;
     }
 
-    private static void retryShield(PendingAction action) {
-        action.shieldRetries++;
+    private static boolean retryShield(PendingAction action) {
+        if (++action.shieldRetries > MAX_STAGE_RETRIES) {
+            return false;
+        }
         action.shieldRequested = false;
         action.shieldConfirmed = false;
-        action.nextActionAtTick = clientTick + RETRY_DELAY_TICKS;
+        action.nextActionAtTick = clientTick + retryDelayTicks(action);
+        return true;
     }
 
-    private static void retryExplosion(PendingAction action) {
-        action.explosionRetries++;
+    private static boolean retryExplosion(PendingAction action) {
+        if (++action.explosionRetries > MAX_STAGE_RETRIES) {
+            return false;
+        }
         action.explosionRequested = false;
         action.explosionConfirmed = false;
-        action.nextActionAtTick = clientTick + RETRY_DELAY_TICKS;
+        action.nextActionAtTick = clientTick + retryDelayTicks(action);
+        return true;
+    }
+
+    private static long retryDelayTicks(PendingAction action) {
+        int configuredDelayMs = Math.max(action.chargeDelayMs, action.defenseDelayMs);
+        return Math.max(MIN_RETRY_DELAY_TICKS, PendingAction.millisecondsToTicks(configuredDelayMs));
+    }
+
+    private static void discardFinishedActions(ClientWorld world) {
+        while (!pendingActions.isEmpty()) {
+            PendingAction action = pendingActions.peekFirst();
+            boolean anchorGone = !isRespawnAnchor(world, action.anchorPos);
+            boolean finished = anchorGone
+                    && action.stage == Stage.EXPLODE_ANCHOR
+                    && action.explosionRequested;
+            boolean invalid = anchorGone
+                    && !(action.stage == Stage.EXPLODE_ANCHOR && action.explosionRequested);
+            if (!finished && !invalid) {
+                return;
+            }
+            pendingActions.removeFirst();
+        }
     }
 
     private static void defenseFailed(MinecraftClient client, PendingAction action) {
