@@ -12,11 +12,17 @@ import net.minecraft.text.Text;
 import org.lwjgl.glfw.GLFW;
 
 public final class AnchorMacroScreen extends Screen {
+    private static final int GENERIC_VIEWPORT_TOP = 60;
+    private static final int GENERIC_VIEWPORT_BOTTOM_MARGIN = 20;
+    private static final int GENERIC_CONTENT_BOTTOM = 345;
     private final Screen parent;
     private Tab activeTab = Tab.GENERIC;
     private AnchorMacroConfig.Mode capturingModifier;
     private TextFieldWidget chargeDelayField;
     private TextFieldWidget defenseDelayField;
+    private ButtonWidget genericTabButton;
+    private ButtonWidget keybindsTabButton;
+    private int genericScroll;
 
     public AnchorMacroScreen(Screen parent) {
         super(Text.translatable("screen.anchor-macro.title"));
@@ -28,12 +34,12 @@ public final class AnchorMacroScreen extends Screen {
         int centerX = this.width / 2;
         int tabWidth = 108;
 
-        addDrawableChild(ButtonWidget.builder(
+        genericTabButton = addDrawableChild(ButtonWidget.builder(
                 Text.translatable("screen.anchor-macro.generic_tab"),
                 button -> switchTab(Tab.GENERIC)
         ).dimensions(centerX - tabWidth - 2, 40, tabWidth, 20).build());
 
-        addDrawableChild(ButtonWidget.builder(
+        keybindsTabButton = addDrawableChild(ButtonWidget.builder(
                 Text.translatable("screen.anchor-macro.keybinds_tab"),
                 button -> switchTab(Tab.KEYBINDS)
         ).dimensions(centerX + 2, 40, tabWidth, 20).build());
@@ -46,13 +52,15 @@ public final class AnchorMacroScreen extends Screen {
     }
 
     private void initGenericTab(int centerX) {
+        genericScroll = Math.min(genericScroll, getGenericMaxScroll());
+        int scroll = genericScroll;
         int buttonWidth = 220;
         int buttonX = centerX - buttonWidth / 2;
 
         addDrawableChild(ButtonWidget.builder(
                 modToggleLabel(),
                 button -> toggleMod()
-        ).dimensions(buttonX, 70, buttonWidth, 20).build());
+        ).dimensions(buttonX, 70 - scroll, buttonWidth, 20).build());
 
         AnchorMacroConfig.Mode[] modes = AnchorMacroConfig.Mode.values();
         for (int index = 0; index < modes.length; index++) {
@@ -60,7 +68,7 @@ public final class AnchorMacroScreen extends Screen {
             addDrawableChild(ButtonWidget.builder(
                     modeLabel(mode),
                     button -> setMode(mode)
-            ).dimensions(buttonX, 95 + index * 25, buttonWidth, 20).build());
+            ).dimensions(buttonX, 95 + index * 25 - scroll, buttonWidth, 20).build());
         }
 
         int delayFieldWidth = 104;
@@ -70,7 +78,7 @@ public final class AnchorMacroScreen extends Screen {
         chargeDelayField = new TextFieldWidget(
                 this.textRenderer,
                 delayStartX,
-                220,
+                220 - scroll,
                 delayFieldWidth,
                 20,
                 Text.translatable("screen.anchor-macro.charge_delay")
@@ -84,7 +92,7 @@ public final class AnchorMacroScreen extends Screen {
         defenseDelayField = new TextFieldWidget(
                 this.textRenderer,
                 delayStartX + delayFieldWidth + delayGap,
-                220,
+                220 - scroll,
                 delayFieldWidth,
                 20,
                 Text.translatable("screen.anchor-macro.defense_delay")
@@ -103,13 +111,13 @@ public final class AnchorMacroScreen extends Screen {
             addDrawableChild(ButtonWidget.builder(
                     Text.literal(Integer.toString(slot + 1)),
                     button -> setSafeHotbarSlot(selectedSlot)
-            ).dimensions(x, 275, slotButtonWidth, 20).build());
+            ).dimensions(x, 275 - scroll, slotButtonWidth, 20).build());
         }
 
         addDrawableChild(ButtonWidget.builder(
                 Text.translatable("gui.done"),
                 button -> close()
-        ).dimensions(buttonX, 325, buttonWidth, 20).build());
+        ).dimensions(buttonX, 325 - scroll, buttonWidth, 20).build());
     }
 
     private void initKeybindsTab(int centerX) {
@@ -158,6 +166,35 @@ public final class AnchorMacroScreen extends Screen {
     }
 
     @Override
+    public boolean mouseScrolled(
+            double mouseX,
+            double mouseY,
+            double horizontalAmount,
+            double verticalAmount
+    ) {
+        if (activeTab == Tab.GENERIC
+                && mouseY >= GENERIC_VIEWPORT_TOP
+                && mouseY <= this.height - GENERIC_VIEWPORT_BOTTOM_MARGIN
+                && getGenericMaxScroll() > 0
+                && verticalAmount != 0.0) {
+            int oldScroll = genericScroll;
+            int scrollDelta = (int) Math.round(verticalAmount * 20.0);
+            if (scrollDelta == 0) {
+                scrollDelta = verticalAmount > 0.0 ? 20 : -20;
+            }
+            genericScroll = Math.max(
+                    0,
+                    Math.min(getGenericMaxScroll(), genericScroll - scrollDelta)
+            );
+            if (genericScroll != oldScroll) {
+                clearAndInit();
+            }
+            return true;
+        }
+        return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
+    }
+
+    @Override
     public void close() {
         this.client.setScreen(parent);
     }
@@ -174,6 +211,13 @@ public final class AnchorMacroScreen extends Screen {
         );
 
         if (activeTab == Tab.GENERIC) {
+            context.enableScissor(
+                    0,
+                    GENERIC_VIEWPORT_TOP,
+                    this.width,
+                    this.height - GENERIC_VIEWPORT_BOTTOM_MARGIN
+            );
+            int scroll = genericScroll;
             int delayFieldWidth = 104;
             int delayGap = 12;
             int delayStartX = this.width / 2 - (delayFieldWidth * 2 + delayGap) / 2;
@@ -181,21 +225,21 @@ public final class AnchorMacroScreen extends Screen {
                     this.textRenderer,
                     Text.translatable("screen.anchor-macro.charge_delay"),
                     delayStartX + delayFieldWidth / 2,
-                    210,
+                    210 - scroll,
                     0xFFFFFF
             );
             context.drawCenteredTextWithShadow(
                     this.textRenderer,
                     Text.translatable("screen.anchor-macro.defense_delay"),
                     delayStartX + delayFieldWidth + delayGap + delayFieldWidth / 2,
-                    210,
+                    210 - scroll,
                     0xFFFFFF
             );
             context.drawCenteredTextWithShadow(
                     this.textRenderer,
                     Text.translatable("screen.anchor-macro.safe_slot"),
                     this.width / 2,
-                    265,
+                    265 - scroll,
                     0xFFFFFF
             );
             context.drawCenteredTextWithShadow(
@@ -203,9 +247,14 @@ public final class AnchorMacroScreen extends Screen {
                     Text.translatable("screen.anchor-macro.selected_slot",
                             AnchorMacroClient.CONFIG.safeHotbarSlot + 1),
                     this.width / 2,
-                    310,
+                    310 - scroll,
                     0xAAAAAA
             );
+            super.render(context, mouseX, mouseY, delta);
+            context.disableScissor();
+            genericTabButton.render(context, mouseX, mouseY, delta);
+            keybindsTabButton.render(context, mouseX, mouseY, delta);
+            return;
         } else {
             context.drawCenteredTextWithShadow(
                     this.textRenderer,
@@ -226,6 +275,14 @@ public final class AnchorMacroScreen extends Screen {
         }
 
         super.render(context, mouseX, mouseY, delta);
+    }
+
+    private int getGenericMaxScroll() {
+        return Math.max(
+                0,
+                GENERIC_CONTENT_BOTTOM
+                        - (this.height - GENERIC_VIEWPORT_BOTTOM_MARGIN)
+        );
     }
 
     private Text modeLabel(AnchorMacroConfig.Mode mode) {

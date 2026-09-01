@@ -39,6 +39,12 @@ public final class AnchorMacroActions {
             return;
         }
 
+        for (PendingAction pending : pendingActions) {
+            if (pending.anchorPos.equals(anchorPos)) {
+                return;
+            }
+        }
+
         pendingActions.addLast(new PendingAction(
                     anchorPos.toImmutable(),
                     AnchorMacroClient.CONFIG.mode,
