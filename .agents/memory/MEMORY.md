@@ -1,1 +1,2 @@
 - [Fabric build toolchain](fabric-build-toolchain.md) — Minecraft 1.20.6 builds use Java 21, Gradle 8.10+, and the official Mojang libraries repository.
+- [Anchor placement targeting](anchor-placement-targeting.md) — distinguish real placements from internal clicks; lock defense to the adjacent side of the exact anchor position.

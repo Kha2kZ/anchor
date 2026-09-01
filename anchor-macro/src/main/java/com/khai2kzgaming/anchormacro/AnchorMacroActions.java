@@ -24,12 +24,17 @@ public final class AnchorMacroActions {
     private static final long SERVER_ACK_TIMEOUT_NANOS = 2_000_000_000L;
     private static final long RETRY_DELAY_NANOS = 50_000_000L;
     private static final Deque<PendingAction> pendingActions = new ArrayDeque<>();
+    private static boolean internalAnchorInteraction;
 
     private AnchorMacroActions() {
     }
 
     public static void initialize() {
         // Kept as an explicit initialization point for the client entrypoint.
+    }
+
+    public static boolean isInternalAnchorInteraction() {
+        return internalAnchorInteraction;
     }
 
     public static void onAnchorPlaced(BlockPos anchorPos) {
@@ -108,7 +113,7 @@ public final class AnchorMacroActions {
                 }
 
                 if (now - action.chargeRequestedAtNanos > SERVER_ACK_TIMEOUT_NANOS) {
-                    retryCharge(action, now);
+                    retryCharge(client, action, now);
                 }
                 return;
             }
@@ -234,9 +239,10 @@ public final class AnchorMacroActions {
         action.waitFor(action.defenseDelayMs);
     }
 
-    private static void retryCharge(PendingAction action, long now) {
+    private static void retryCharge(MinecraftClient client, PendingAction action, long now) {
         if (action.chargeRetries >= MAX_ACTION_RETRIES) {
-            action.chargeRequested = false;
+            notify(client, "Anchor Macro: server did not confirm the charge.");
+            complete(action);
             return;
         }
         action.chargeRetries++;
@@ -292,7 +298,12 @@ public final class AnchorMacroActions {
                 anchorPos,
                 false
         );
-        return client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hit);
+        internalAnchorInteraction = true;
+        try {
+            return client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hit);
+        } finally {
+            internalAnchorInteraction = false;
+        }
     }
 
     private static boolean selectHotbarItem(ClientPlayerEntity player, Item item) {
@@ -370,14 +381,21 @@ public final class AnchorMacroActions {
         private final int safeHotbarSlot;
         private final int chargeDelayMs;
         private final int defenseDelayMs;
+        private final Direction defenseDirection;
         private Stage stage = Stage.CHARGE_ANCHOR;
         private int confirmationTicks;
         private boolean chargeRequested;
         private int chargesBeforeRequest;
         private long chargeRequestedAtNanos;
+        private int chargeRetries;
         private boolean shieldRequested;
         private BlockPos shieldTarget;
+        private ShieldPlacement shieldPlacement;
         private long shieldRequestedAtNanos;
+        private int shieldRetries;
+        private boolean explosionRequested;
+        private long explosionRequestedAtNanos;
+        private int explosionRetries;
         private long nextActionAtNanos;
 
         private PendingAction(
@@ -385,13 +403,15 @@ public final class AnchorMacroActions {
                 AnchorMacroConfig.Mode mode,
                 int safeHotbarSlot,
                 int chargeDelayMs,
-                int defenseDelayMs
+                int defenseDelayMs,
+                Direction defenseDirection
         ) {
             this.anchorPos = anchorPos;
             this.mode = mode;
             this.safeHotbarSlot = AnchorMacroConfig.clampHotbarSlot(safeHotbarSlot);
             this.chargeDelayMs = AnchorMacroConfig.clampDelayMs(chargeDelayMs);
             this.defenseDelayMs = AnchorMacroConfig.clampDelayMs(defenseDelayMs);
+            this.defenseDirection = defenseDirection;
             this.nextActionAtNanos = System.nanoTime() + millisecondsToNanos(this.chargeDelayMs);
         }
 

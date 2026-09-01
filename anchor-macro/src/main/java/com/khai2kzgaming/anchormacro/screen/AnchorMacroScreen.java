@@ -23,6 +23,7 @@ public final class AnchorMacroScreen extends Screen {
     private ButtonWidget genericTabButton;
     private ButtonWidget keybindsTabButton;
     private int genericScroll;
+    private boolean scrollbarDragging;
 
     public AnchorMacroScreen(Screen parent) {
         super(Text.translatable("screen.anchor-macro.title"));
@@ -195,6 +196,43 @@ public final class AnchorMacroScreen extends Screen {
     }
 
     @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (activeTab == Tab.GENERIC
+                && button == 0
+                && getGenericMaxScroll() > 0
+                && isOverScrollbar(mouseX, mouseY)) {
+            scrollbarDragging = true;
+            setScrollFromScrollbar(mouseY);
+            return true;
+        }
+        return super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseDragged(
+            double mouseX,
+            double mouseY,
+            int button,
+            double deltaX,
+            double deltaY
+    ) {
+        if (scrollbarDragging && button == 0) {
+            setScrollFromScrollbar(mouseY);
+            return true;
+        }
+        return super.mouseDragged(mouseX, mouseY, button, deltaX, deltaY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (scrollbarDragging && button == 0) {
+            scrollbarDragging = false;
+            return true;
+        }
+        return super.mouseReleased(mouseX, mouseY, button);
+    }
+
+    @Override
     public void close() {
         this.client.setScreen(parent);
     }
@@ -252,6 +290,7 @@ public final class AnchorMacroScreen extends Screen {
             );
             super.render(context, mouseX, mouseY, delta);
             context.disableScissor();
+            drawScrollbar(context);
             genericTabButton.render(context, mouseX, mouseY, delta);
             keybindsTabButton.render(context, mouseX, mouseY, delta);
             return;
@@ -282,6 +321,75 @@ public final class AnchorMacroScreen extends Screen {
                 0,
                 GENERIC_CONTENT_BOTTOM
                         - (this.height - GENERIC_VIEWPORT_BOTTOM_MARGIN)
+        );
+    }
+
+    private int getScrollbarX() {
+        return this.width / 2 + 116;
+    }
+
+    private int getScrollbarTop() {
+        return GENERIC_VIEWPORT_TOP;
+    }
+
+    private int getScrollbarBottom() {
+        return this.height - GENERIC_VIEWPORT_BOTTOM_MARGIN;
+    }
+
+    private int getScrollbarThumbHeight() {
+        int viewportHeight = getScrollbarBottom() - getScrollbarTop();
+        int contentHeight = GENERIC_CONTENT_BOTTOM - GENERIC_VIEWPORT_TOP;
+        return Math.max(20, Math.min(viewportHeight, viewportHeight * viewportHeight / contentHeight));
+    }
+
+    private int getScrollbarThumbTop() {
+        int travel = getScrollbarBottom() - getScrollbarTop() - getScrollbarThumbHeight();
+        if (travel <= 0 || getGenericMaxScroll() == 0) {
+            return getScrollbarTop();
+        }
+        return getScrollbarTop()
+                + (int) Math.round((double) travel * genericScroll / getGenericMaxScroll());
+    }
+
+    private boolean isOverScrollbar(double mouseX, double mouseY) {
+        return mouseX >= getScrollbarX() - 4
+                && mouseX <= getScrollbarX() + 10
+                && mouseY >= getScrollbarTop()
+                && mouseY <= getScrollbarBottom();
+    }
+
+    private void setScrollFromScrollbar(double mouseY) {
+        int travel = getScrollbarBottom() - getScrollbarTop() - getScrollbarThumbHeight();
+        if (travel <= 0) {
+            return;
+        }
+
+        double thumbCenter = mouseY - getScrollbarTop() - getScrollbarThumbHeight() / 2.0;
+        double ratio = Math.max(0.0, Math.min(1.0, thumbCenter / travel));
+        int newScroll = (int) Math.round(ratio * getGenericMaxScroll());
+        if (newScroll != genericScroll) {
+            genericScroll = newScroll;
+            clearAndInit();
+        }
+    }
+
+    private void drawScrollbar(DrawContext context) {
+        if (getGenericMaxScroll() <= 0) {
+            return;
+        }
+
+        int x = getScrollbarX();
+        int top = getScrollbarTop();
+        int bottom = getScrollbarBottom();
+        int thumbTop = getScrollbarThumbTop();
+        int thumbBottom = thumbTop + getScrollbarThumbHeight();
+        context.fill(x, top, x + 6, bottom, 0x66333333);
+        context.fill(
+                x,
+                thumbTop,
+                x + 6,
+                thumbBottom,
+                scrollbarDragging ? 0xFFFFFFFF : 0xFFAAAAAA
         );
     }
 
