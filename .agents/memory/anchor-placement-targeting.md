@@ -14,3 +14,9 @@ Placement detection and server-state acknowledgment must remain separate: enqueu
 **Why:** Treating the same server update as a second placement queued duplicate actions, causing repeated charges and stale defense stages.
 
 **How to apply:** Match acknowledgments to the pending action's exact anchor or saved defense target, and keep retrying the same saved action when the server has not confirmed it.
+
+Defense placement must use a placeable non-Glowstone block when the Respawn Anchor is the support face; Glowstone on that face invokes the anchor instead of placing a defense block.
+
+**Why:** The anchor's normal block-use handler consumes Glowstone, so using it for the protective placement is indistinguishable from a second charge and can make Full Safe Anchor charge twice.
+
+**How to apply:** Prefer the configured hotbar slot, fall back to another placeable block, store that block for confirmation, and send the saved adjacent target and face directly so camera aim is irrelevant.

@@ -13,32 +13,32 @@ rest of the sequence.
 ### Safe Anchor
 
 After placing an anchor, the mod switches to Glowstone, charges the anchor,
-places a Glowstone block in a supported space in front of you at the anchor's
-level when possible, and switches back to the configured hotbar slot.
+places one non-Glowstone defense block in the space directly between you and
+the anchor when possible, and switches back to the configured hotbar slot.
 
 ### Full Safe Anchor
 
 Runs the Safe Anchor sequence, then switches to the configured hotbar slot and
-activates the charged anchor automatically. It will not activate the anchor if
-the protective Glowstone placement fails.
+activates the charged anchor automatically. If the defense placement is not
+possible, it skips that step and continues to the detonation.
 
 ### Full Anchor
 
 Switches to Glowstone, charges the anchor, and activates it automatically.
 
-The shield placement checks one and two blocks ahead, preferring the anchor's
-level when you are standing at a different height. It will not click the
-Respawn Anchor as the support block, preventing an elevated setup from
-charging the anchor again. If neither position is replaceable with a solid
-block below it, it leaves the selected slot set to your configured slot and
-shows a message instead of guessing.
+The defense placement targets the anchor's exact horizontal side facing the
+player, using the anchor itself as the support block. It sends that exact
+position and face in the interaction packet, so camera aim does not matter.
+Glowstone is never used for this step because clicking an anchor with
+Glowstone would charge it again. The configured hotbar slot is preferred,
+with another placeable block in the hotbar used as a fallback.
 
-There is no fixed macro cooldown between anchor placements. Placements are
-queued so rapid anchor spam is not overwritten. Each anchor sends its charge
-request only once and waits for the client to observe the server-confirmed
-charge before continuing. Full Safe Anchor also waits for the server-confirmed
-Glowstone defense before detonating. Server latency and anti-cheat limits can
-still determine the practical rate.
+There is no fixed macro cooldown between anchor placements. Placement attempts
+are tracked on client ticks and become actions only after the exact anchor
+block exists in the client world. Each anchor waits for the client to observe
+the server-confirmed charge and retries unconfirmed interactions. Full Safe
+Anchor also waits for the server-confirmed defense block before detonating.
+Server latency and anti-cheat limits can still determine the practical rate.
 
 ## Enable and disable
 

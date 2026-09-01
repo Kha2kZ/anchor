@@ -29,8 +29,7 @@ public abstract class ClientPlayerInteractionManagerMixin {
             BlockHitResult hitResult,
             CallbackInfoReturnable<ActionResult> callbackInfo
     ) {
-        anchorMacro$holdingRespawnAnchor = hand == Hand.MAIN_HAND
-                && !AnchorMacroActions.isInternalAnchorInteraction()
+        anchorMacro$holdingRespawnAnchor = !AnchorMacroActions.isInternalAnchorInteraction()
                 && player.getStackInHand(hand).isOf(Items.RESPAWN_ANCHOR);
         anchorMacro$placementPos = anchorMacro$holdingRespawnAnchor
                 ? hitResult.getBlockPos().offset(hitResult.getSide()).toImmutable()
@@ -44,10 +43,10 @@ public abstract class ClientPlayerInteractionManagerMixin {
             BlockHitResult hitResult,
             CallbackInfoReturnable<ActionResult> callbackInfo
     ) {
-        if (anchorMacro$holdingRespawnAnchor
-                && callbackInfo.getReturnValue().isAccepted()
-                && anchorMacro$placementPos != null) {
-            AnchorMacroActions.onAnchorPlaced(anchorMacro$placementPos);
+        if (anchorMacro$holdingRespawnAnchor && anchorMacro$placementPos != null) {
+            // The client result only says that a packet was sent. The tick tracker
+            // waits for the actual anchor block to exist before starting the macro.
+            AnchorMacroActions.onAnchorPlacementAttempt(anchorMacro$placementPos);
         }
         anchorMacro$holdingRespawnAnchor = false;
         anchorMacro$placementPos = null;
