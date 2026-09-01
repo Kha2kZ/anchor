@@ -27,7 +27,7 @@ public abstract class ClientPlayerInteractionManagerMixin {
             ClientPlayerEntity player,
             Hand hand,
             BlockHitResult hitResult,
-            CallbackInfo callbackInfo
+            CallbackInfoReturnable<ActionResult> callbackInfo
     ) {
         anchorMacro$holdingRespawnAnchor = hand == Hand.MAIN_HAND
                 && !AnchorMacroActions.isInternalAnchorInteraction()
