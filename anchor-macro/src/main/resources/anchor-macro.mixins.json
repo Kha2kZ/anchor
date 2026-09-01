@@ -1,5 +1,5 @@
 {
-  "required": true,
+  "required": false,
   "package": "com.khai2kzgaming.anchormacro.mixin",
   "compatibilityLevel": "JAVA_21",
   "client": [
