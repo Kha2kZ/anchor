@@ -1,45 +1,47 @@
-# [Project name]
+# Anchor Macro
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A client-side Fabric mod for Minecraft 1.20.6 that automates respawn-anchor charging, defense, and detonation sequences.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `cd anchor-macro && ./gradlew build` — build the Anchor Macro mod
+- The compiled mod JAR is written to `anchor-macro/build/libs/`
+- Java 21 and Gradle 8.10.2+ are required; the checked-in Gradle wrapper provides the supported Gradle version
+- No long-running preview workflow is configured because this repository contains a Minecraft mod, not a web server
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Java 21
+- Gradle with Fabric Loom 1.8.12
+- Minecraft 1.20.6
+- Fabric Loader 0.15.11 and Fabric API 0.100.8+1.20.6
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `anchor-macro/` — the focused mod project
+- `anchor-macro/src/main/java/` — mod source code
+- `anchor-macro/src/main/resources/` — Fabric metadata and assets
+- `totem-slot-highlighter/` — separate imported mod, intentionally not modified by this setup
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- The existing standalone Gradle/Fabric structure is preserved.
+- Builds use the checked-in Gradle wrapper rather than relying on a global Gradle version.
+- The Replit setup targets `anchor-macro` only; the second imported mod remains independent.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Anchor Macro provides configurable Auto Glowstone, Safe Anchor, Full Safe Anchor, and Full Anchor modes. It is intended for client-side use in permitted singleplayer or multiplayer environments.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+Focus setup and builds on `anchor-macro`; leave `totem-slot-highlighter` unchanged unless requested.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Fabric mods built for Minecraft 1.20.6 require Java 21.
+- Server rules, latency, and anti-cheat systems can prevent automated actions from succeeding.
 
 ## Pointers
 
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- See `anchor-macro/README.md` for installation, controls, modes, and configuration details.
