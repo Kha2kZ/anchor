@@ -1,0 +1,9 @@
+plugins {
+    id "base"
+}
+
+// Make `./anchor-macro/gradlew build` from the repository root build the
+// selected mod without requiring users to change directories.
+tasks.named("build") {
+    dependsOn(":anchor-macro:build")
+}

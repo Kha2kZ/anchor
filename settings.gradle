@@ -1,0 +1,14 @@
+pluginManagement {
+    repositories {
+        maven { url = "https://maven.fabricmc.net/" }
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+rootProject.name = "minecraft-mods"
+
+// The root build intentionally includes only Anchor Macro. The Totem mod keeps
+// its own independent Gradle project and is not changed by the root build.
+include(":anchor-macro")
+project(":anchor-macro").projectDir = file("anchor-macro")
