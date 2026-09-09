@@ -11,6 +11,15 @@ env = { "CI" = "true" }
 [workflows]
 runButton = "Project"
 
+[[workflows.workflow]]
+name = "Build"
+mode = "sequential"
+author = 49527460
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "./anchor-macro/gradlew build"
+
 [agent]
 stack = "PNPM_WORKSPACE"
 expertMode = true

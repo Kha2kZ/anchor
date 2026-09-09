@@ -1,9 +1,9 @@
 package com.khai2kzgaming.anchormacro;
 
 import com.khai2kzgaming.anchormacro.config.AnchorMacroConfig;
-import java.util.ArrayDeque;
-import java.util.Deque;
+import java.util.HashMap;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.Optional;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
@@ -13,115 +13,49 @@ import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.world.ClientWorld;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
+import net.minecraft.network.packet.c2s.play.HandSwingC2SPacket;
+import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.math.Box;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
 public final class AnchorMacroActions {
-    private static final int MAX_QUEUED_ACTIONS = 64;
-    private static final long SERVER_ACK_TIMEOUT_TICKS = 40L;
-    private static final long MIN_RETRY_DELAY_TICKS = 4L;
-    private static final int MAX_STAGE_RETRIES = 3;
-    private static final long PLACEMENT_ATTEMPT_TIMEOUT_TICKS = 200L;
-    private static final Deque<PendingAction> pendingActions = new ArrayDeque<>();
-    private static final Deque<PlacementAttempt> placementAttempts = new ArrayDeque<>();
+    private static final double MAX_REACH_SQUARED = 20.25; // (4.5 blocks)^2
+    private static final long STAGE_TIMEOUT_TICKS = 10L;   // Timeout ngắn (0.5s) chống treo vùng
+    private static final long TASK_LIFETIME_TICKS = 40L;   // Tối đa 2s cho 1 cycle full
+
+    // Chuyển sang Map độc lập từng BlockPos thay vì Deque nghẽn
+    private static final Map<BlockPos, AnchorTask> activeTasks = new HashMap<>();
     private static boolean internalAnchorInteraction;
     private static long clientTick;
     private static ClientWorld trackedWorld;
 
-    private AnchorMacroActions() {
-    }
+    private AnchorMacroActions() {}
 
-    public static void initialize() {
-        // Kept as an explicit initialization point for the client entrypoint.
-    }
+    public static void initialize() {}
 
     public static boolean isInternalAnchorInteraction() {
         return internalAnchorInteraction;
     }
 
+    /**
+     * Gọi ngay khi client vừa gửi packet đặt Anchor. Ghi đè tức thì mọi task cũ ở vị trí này.
+     */
     public static void onAnchorPlacementAttempt(BlockPos anchorPos) {
-        if (!AnchorMacroClient.CONFIG.enabled) {
-            return;
-        }
+        if (!AnchorMacroClient.CONFIG.enabled) return;
 
-        BlockPos immutablePos = anchorPos.toImmutable();
-        forgetFinishedActionAt(immutablePos);
-        if (hasTrackedAnchor(immutablePos)) {
-            return;
-        }
-
-        if (placementAttempts.size() >= MAX_QUEUED_ACTIONS) {
-            return;
-        }
-        placementAttempts.addLast(new PlacementAttempt(
-                immutablePos,
-                clientTick + PLACEMENT_ATTEMPT_TIMEOUT_TICKS
-        ));
-    }
-
-    private static void forgetFinishedActionAt(BlockPos anchorPos) {
-        Iterator<PendingAction> actions = pendingActions.iterator();
-        while (actions.hasNext()) {
-            PendingAction action = actions.next();
-            if (action.anchorPos.equals(anchorPos)
-                    && action.stage == Stage.EXPLODE_ANCHOR
-                    && action.explosionRequested) {
-                // The player has started placing the next anchor at this
-                // position. Do not let the previous completed explosion block
-                // the next action while its final update is being processed.
-                actions.remove();
-            }
-        }
-    }
-
-    private static boolean hasTrackedAnchor(BlockPos anchorPos) {
-        for (PendingAction pending : pendingActions) {
-            if (pending.anchorPos.equals(anchorPos)) {
-                return true;
-            }
-        }
-        for (PlacementAttempt attempt : placementAttempts) {
-            if (attempt.anchorPos.equals(anchorPos)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static void queueConfirmedPlacements(ClientWorld world) {
-        Iterator<PlacementAttempt> attempts = placementAttempts.iterator();
-        while (attempts.hasNext()) {
-            PlacementAttempt attempt = attempts.next();
-            if (world.getBlockState(attempt.anchorPos).isOf(Blocks.RESPAWN_ANCHOR)) {
-                if (pendingActions.size() < MAX_QUEUED_ACTIONS) {
-                    addPendingAction(attempt.anchorPos);
-                }
-                attempts.remove();
-            } else if (clientTick >= attempt.expiresAtTick) {
-                attempts.remove();
-            }
-        }
-    }
-
-    private static void addPendingAction(BlockPos anchorPos) {
-        MinecraftClient client = MinecraftClient.getInstance();
-        Direction defenseDirection = client.player == null
-                ? Direction.NORTH
-                : findDefenseDirection(client.player, anchorPos);
-
-        pendingActions.addLast(new PendingAction(
-                anchorPos.toImmutable(),
+        BlockPos pos = anchorPos.toImmutable();
+        activeTasks.put(pos, new AnchorTask(
+                pos,
                 AnchorMacroClient.CONFIG.mode,
                 AnchorMacroClient.CONFIG.safeHotbarSlot,
                 AnchorMacroClient.CONFIG.chargeDelayMs,
-                AnchorMacroClient.CONFIG.defenseDelayMs,
-                defenseDirection
-            ));
+                AnchorMacroClient.CONFIG.defenseDelayMs
+        ));
     }
 
     public static void onServerBlockUpdate(BlockPos pos, BlockState state) {
@@ -133,441 +67,407 @@ public final class AnchorMacroActions {
     }
 
     private static void observeBlockState(BlockPos pos, BlockState state) {
-        for (PendingAction action : pendingActions) {
-            if (action.anchorPos.equals(pos)) {
-                if (state.isOf(Blocks.RESPAWN_ANCHOR)) {
-                    action.placementConfirmed = true;
-                    if (action.chargeRequested
-                            && state.get(RespawnAnchorBlock.CHARGES) > action.chargesBeforeRequest) {
-                        action.chargeConfirmed = true;
-                    }
-                } else if (action.stage == Stage.EXPLODE_ANCHOR && action.explosionRequested) {
-                    action.explosionConfirmed = true;
+        AnchorTask task = activeTasks.get(pos);
+        if (task != null) {
+            if (state.isOf(Blocks.RESPAWN_ANCHOR)) {
+                if (task.chargeRequested && state.get(RespawnAnchorBlock.CHARGES) > task.chargesBeforeRequest) {
+                    task.chargeConfirmed = true;
                 }
-            }
-
-            if (action.shieldTarget != null
-                    && action.shieldTarget.equals(pos)
-                    && state.isOf(Blocks.GLOWSTONE)
-                    && action.shieldRequested) {
-                action.shieldConfirmed = true;
+            } else if (!state.isOf(Blocks.RESPAWN_ANCHOR) && task.stage == Stage.EXPLODE_ANCHOR) {
+                activeTasks.remove(pos); // Xóa ngay khi block bị phá hủy/nổ
             }
         }
     }
 
     public static void tick(MinecraftClient client) {
         if (client.world != trackedWorld) {
-            pendingActions.clear();
-            placementAttempts.clear();
+            activeTasks.clear();
             trackedWorld = client.world;
             clientTick = 0L;
         }
         clientTick++;
 
-        if (!AnchorMacroClient.CONFIG.enabled) {
-            pendingActions.clear();
-            placementAttempts.clear();
+        if (!AnchorMacroClient.CONFIG.enabled || client.player == null || client.world == null || client.interactionManager == null) {
+            activeTasks.clear();
             return;
         }
 
-        if (client.player == null || client.world == null) {
-            pendingActions.clear();
-            placementAttempts.clear();
-            return;
-        }
+        // 1. Dọn dẹp các task hỏng, rác, quá hạn hoặc mất block
+        cleanupTasks(client.world, client.player);
 
-        queueConfirmedPlacements(client.world);
-        discardFinishedActions(client.world);
-        if (pendingActions.isEmpty()) {
-            return;
-        }
+        if (activeTasks.isEmpty()) return;
 
-        if (client.interactionManager == null) {
-            pendingActions.clear();
-            return;
-        }
+        // 2. Tìm Task gần người chơi nhất trong tầm Reach hợp lệ (Tránh bị khóa vùng)
+        AnchorTask targetTask = findClosestValidTask(client.player, client.world);
+        if (targetTask == null) return;
 
-        PendingAction action = pendingActions.peekFirst();
+        if (!targetTask.isReady(clientTick)) return;
 
-        if (!isRespawnAnchor(client.world, action.anchorPos)) {
-            if (action.stage == Stage.EXPLODE_ANCHOR && action.explosionRequested) {
-                complete(action);
-                return;
-            }
-            // Placement is already confirmed before an action enters this queue.
-            // If the player removes the anchor while it is processing, abandon
-            // this action instead of reporting a misleading server timeout.
-            complete(action);
-            return;
-        }
+        // --- STAGE 1: CHARGE ANCHOR ---
+        if (targetTask.stage == Stage.CHARGE_ANCHOR) {
+            int charges = client.world.getBlockState(targetTask.anchorPos).get(RespawnAnchorBlock.CHARGES);
 
-        if (!action.isReady(clientTick)) {
-            return;
-        }
-
-        if (action.stage == Stage.CHARGE_ANCHOR) {
-            int charges = client.world.getBlockState(action.anchorPos)
-                    .get(RespawnAnchorBlock.CHARGES);
-
-            if (action.chargeRequested) {
-                if (action.chargeConfirmed || charges > action.chargesBeforeRequest) {
-                    advanceAfterCharge(client, action);
+            if (targetTask.chargeRequested) {
+                if (targetTask.chargeConfirmed || charges > targetTask.chargesBeforeRequest) {
+                    advanceAfterCharge(client, targetTask);
                     return;
                 }
-
-                if (clientTick - action.chargeRequestedAtTick >= SERVER_ACK_TIMEOUT_TICKS
-                        && !retryCharge(action)) {
-                    complete(action);
+                if (clientTick - targetTask.stageStartTick >= STAGE_TIMEOUT_TICKS) {
+                    activeTasks.remove(targetTask.anchorPos); // Hủy nếu kẹt
                 }
                 return;
             }
 
             if (!selectHotbarItem(client.player, Items.GLOWSTONE)) {
-                notify(client, "Anchor Macro: no Glowstone found in the hotbar.");
-                complete(action);
+                activeTasks.remove(targetTask.anchorPos);
                 return;
             }
 
             if (charges >= RespawnAnchorBlock.MAX_CHARGES) {
-                advanceAfterCharge(client, action);
+                advanceAfterCharge(client, targetTask);
                 return;
             }
 
-            ActionResult result = interactWithAnchor(client, action.anchorPos, action.defenseDirection);
-            if (!result.isAccepted()) {
-                if (!retryCharge(action)) {
-                    complete(action);
-                }
-                return;
+            ActionResult result = interactLegitWithBlock(client, targetTask.anchorPos);
+            if (result.isAccepted()) {
+                targetTask.chargeRequested = true;
+                targetTask.chargesBeforeRequest = charges;
+                targetTask.stageStartTick = clientTick;
+            } else {
+                activeTasks.remove(targetTask.anchorPos);
             }
-
-            action.chargeRequested = true;
-            action.chargesBeforeRequest = charges;
-            action.chargeRequestedAtTick = clientTick;
             return;
         }
 
-        if (action.stage == Stage.PLACE_SHIELD) {
-            if (action.shieldRequested) {
-                if (action.shieldConfirmed
-                        || client.world.getBlockState(action.shieldTarget).isOf(Blocks.GLOWSTONE)) {
-                    if (action.mode == AnchorMacroConfig.Mode.FULL_SAFE_ANCHOR) {
-                        action.stage = Stage.EXPLODE_ANCHOR;
-                        action.waitFor(action.defenseDelayMs);
+        // --- STAGE 2: PLACE SHIELD ---
+        if (targetTask.stage == Stage.PLACE_SHIELD) {
+            if (targetTask.shieldRequested) {
+                if (targetTask.shieldConfirmed || client.world.getBlockState(targetTask.shieldTarget).isOf(Blocks.GLOWSTONE)) {
+                    if (targetTask.mode == AnchorMacroConfig.Mode.FULL_SAFE_ANCHOR) {
+                        targetTask.stage = Stage.EXPLODE_ANCHOR;
+                        targetTask.stageStartTick = clientTick;
+                        targetTask.waitFor(targetTask.defenseDelayMs);
                         return;
                     }
-                    complete(action);
+                    activeTasks.remove(targetTask.anchorPos);
                     return;
                 }
-
-                if (clientTick - action.shieldRequestedAtTick >= SERVER_ACK_TIMEOUT_TICKS
-                        && !retryShield(action)) {
-                    defenseFailed(client, action);
+                if (clientTick - targetTask.stageStartTick >= STAGE_TIMEOUT_TICKS) {
+                    defenseFailed(client, targetTask);
                 }
                 return;
             }
 
-            ShieldPlacement shield = action.shieldPlacement;
+            ShieldPlacement shield = targetTask.shieldPlacement;
             if (shield == null) {
-                Optional<ShieldPlacement> placement = findShieldPlacement(
-                        client,
-                        action.anchorPos,
-                        action.defenseDirection
-                );
+                Optional<ShieldPlacement> placement = findOptimalShieldPlacement(client.player, client.world, targetTask.anchorPos);
                 if (placement.isEmpty()) {
-                    defenseFailed(client, action);
+                    defenseFailed(client, targetTask); // Không có sàn -> Bỏ shield nổ luôn
                     return;
                 }
                 shield = placement.get();
-                action.shieldPlacement = shield;
-            } else if (!client.world.getBlockState(shield.target).isReplaceable()
-                    && !client.world.getBlockState(shield.target).isOf(Blocks.GLOWSTONE)) {
-                defenseFailed(client, action);
-                return;
+                targetTask.shieldPlacement = shield;
             }
 
             if (!selectHotbarItem(client.player, Items.GLOWSTONE)) {
-                defenseFailed(client, action);
+                defenseFailed(client, targetTask);
                 return;
             }
 
-            ActionResult result = client.interactionManager.interactBlock(
-                    client.player,
-                    Hand.MAIN_HAND,
-                    shield.hitResult
-            );
-            client.player.getInventory().selectedSlot = action.safeHotbarSlot;
-            if (!result.isAccepted()) {
-                if (!retryShield(action)) {
-                    defenseFailed(client, action);
-                }
-                return;
-            }
+            ActionResult result = interactLegitWithHitResult(client, shield.hitResult);
+            client.player.getInventory().selectedSlot = targetTask.safeHotbarSlot;
 
-            action.shieldTarget = shield.target;
-            action.shieldRequested = true;
-            action.shieldConfirmed = false;
-            action.shieldRequestedAtTick = clientTick;
+            if (result.isAccepted()) {
+                targetTask.shieldTarget = shield.target;
+                targetTask.shieldRequested = true;
+                targetTask.stageStartTick = clientTick;
+            } else {
+                defenseFailed(client, targetTask);
+            }
             return;
         }
 
-        if (action.stage == Stage.EXPLODE_ANCHOR) {
-            if (action.explosionRequested) {
-                if (action.explosionConfirmed) {
-                    complete(action);
-                    return;
-                }
-                if (clientTick - action.explosionRequestedAtTick >= SERVER_ACK_TIMEOUT_TICKS
-                        && !retryExplosion(action)) {
-                    complete(action);
-                }
+        // --- STAGE 3: EXPLODE ANCHOR ---
+        if (targetTask.stage == Stage.EXPLODE_ANCHOR) {
+            if (targetTask.explosionRequested) {
+                activeTasks.remove(targetTask.anchorPos);
                 return;
             }
 
-            ActionResult result = interactWithAnchor(client, action.anchorPos, action.defenseDirection);
-            if (!result.isAccepted()) {
-                if (!retryExplosion(action)) {
-                    complete(action);
-                }
-                return;
+            client.player.getInventory().selectedSlot = targetTask.safeHotbarSlot;
+
+            ActionResult result = interactLegitWithBlock(client, targetTask.anchorPos);
+            if (result.isAccepted()) {
+                targetTask.explosionRequested = true;
+                activeTasks.remove(targetTask.anchorPos); // Nổ xong giải phóng ngay
+            } else {
+                activeTasks.remove(targetTask.anchorPos);
             }
-            action.explosionRequested = true;
-            action.explosionConfirmed = false;
-            action.explosionRequestedAtTick = clientTick;
         }
     }
 
-    private static void advanceAfterCharge(MinecraftClient client, PendingAction action) {
-        if (action.mode == AnchorMacroConfig.Mode.AUTO_GLOWSTONE) {
-            complete(action);
+    private static void advanceAfterCharge(MinecraftClient client, AnchorTask task) {
+        if (task.mode == AnchorMacroConfig.Mode.AUTO_GLOWSTONE) {
+            activeTasks.remove(task.anchorPos);
             return;
         }
 
-        if (action.mode == AnchorMacroConfig.Mode.FULL_ANCHOR) {
-            client.player.getInventory().selectedSlot = action.safeHotbarSlot;
-            action.stage = Stage.EXPLODE_ANCHOR;
+        if (task.mode == AnchorMacroConfig.Mode.FULL_ANCHOR) {
+            client.player.getInventory().selectedSlot = task.safeHotbarSlot;
+            task.stage = Stage.EXPLODE_ANCHOR;
         } else {
-            action.stage = Stage.PLACE_SHIELD;
+            task.stage = Stage.PLACE_SHIELD;
         }
-        action.waitFor(action.defenseDelayMs);
+        task.stageStartTick = clientTick;
+        task.waitFor(task.defenseDelayMs);
     }
 
-    private static boolean retryCharge(PendingAction action) {
-        if (++action.chargeRetries > MAX_STAGE_RETRIES) {
-            return false;
+    private static void defenseFailed(MinecraftClient client, AnchorTask task) {
+        if (client.player != null) {
+            client.player.getInventory().selectedSlot = task.safeHotbarSlot;
         }
-        action.chargeRequested = false;
-        action.chargeConfirmed = false;
-        action.nextActionAtTick = clientTick + retryDelayTicks(action);
-        return true;
+        task.stage = Stage.EXPLODE_ANCHOR;
+        task.stageStartTick = clientTick;
+        task.waitFor(task.defenseDelayMs);
     }
 
-    private static boolean retryShield(PendingAction action) {
-        if (++action.shieldRetries > MAX_STAGE_RETRIES) {
-            return false;
-        }
-        action.shieldRequested = false;
-        action.shieldConfirmed = false;
-        action.nextActionAtTick = clientTick + retryDelayTicks(action);
-        return true;
-    }
+    private static void cleanupTasks(ClientWorld world, ClientPlayerEntity player) {
+        Vec3d eyePos = player.getEyePos();
+        Iterator<Map.Entry<BlockPos, AnchorTask>> iterator = activeTasks.entrySet().iterator();
 
-    private static boolean retryExplosion(PendingAction action) {
-        if (++action.explosionRetries > MAX_STAGE_RETRIES) {
-            return false;
-        }
-        action.explosionRequested = false;
-        action.explosionConfirmed = false;
-        action.nextActionAtTick = clientTick + retryDelayTicks(action);
-        return true;
-    }
+        while (iterator.hasNext()) {
+            Map.Entry<BlockPos, AnchorTask> entry = iterator.next();
+            BlockPos pos = entry.getKey();
+            AnchorTask task = entry.getValue();
 
-    private static long retryDelayTicks(PendingAction action) {
-        int configuredDelayMs = Math.max(action.chargeDelayMs, action.defenseDelayMs);
-        return Math.max(MIN_RETRY_DELAY_TICKS, PendingAction.millisecondsToTicks(configuredDelayMs));
-    }
-
-    private static void discardFinishedActions(ClientWorld world) {
-        while (!pendingActions.isEmpty()) {
-            PendingAction action = pendingActions.peekFirst();
-            boolean anchorGone = !isRespawnAnchor(world, action.anchorPos);
-            boolean finished = anchorGone
-                    && action.stage == Stage.EXPLODE_ANCHOR
-                    && action.explosionRequested;
-            boolean invalid = anchorGone
-                    && !(action.stage == Stage.EXPLODE_ANCHOR && action.explosionRequested);
-            if (!finished && !invalid) {
-                return;
+            // Xóa nếu quá hạn tổng thời gian, hoặc block không phải Anchor nữa
+            if (clientTick - task.createdTick > TASK_LIFETIME_TICKS || !world.getBlockState(pos).isOf(Blocks.RESPAWN_ANCHOR)) {
+                iterator.remove();
+                continue;
             }
-            pendingActions.removeFirst();
+
+            // Xóa nếu quá xa khoảng cách Reach (Do nổ bị văng lùi)
+            if (eyePos.squaredDistanceTo(Vec3d.ofCenter(pos)) > MAX_REACH_SQUARED) {
+                iterator.remove();
+            }
         }
     }
 
-    private static void defenseFailed(MinecraftClient client, PendingAction action) {
-        client.player.getInventory().selectedSlot = action.safeHotbarSlot;
-        if (action.mode == AnchorMacroConfig.Mode.FULL_SAFE_ANCHOR) {
-            action.stage = Stage.EXPLODE_ANCHOR;
-            action.waitFor(action.defenseDelayMs);
-        } else {
-            complete(action);
+    private static AnchorTask findClosestValidTask(ClientPlayerEntity player, ClientWorld world) {
+        Vec3d eyePos = player.getEyePos();
+        AnchorTask closestTask = null;
+        double minDistance = Double.MAX_VALUE;
+
+        for (AnchorTask task : activeTasks.values()) {
+            double distSq = eyePos.squaredDistanceTo(Vec3d.ofCenter(task.anchorPos));
+            if (distSq <= MAX_REACH_SQUARED && distSq < minDistance) {
+                minDistance = distSq;
+                closestTask = task;
+            }
         }
+
+        return closestTask;
     }
 
-    private static void complete(PendingAction action) {
-        if (pendingActions.peekFirst() == action) {
-            pendingActions.removeFirst();
+    // =========================================================================
+    // LEGIT PACKET SYSTEM (SILENT LOOK + SWING HAND)
+    // =========================================================================
+
+    private static ActionResult interactLegitWithBlock(MinecraftClient client, BlockPos targetPos) {
+        if (client.player == null || client.world == null || client.interactionManager == null) {
+            return ActionResult.PASS;
         }
+
+        BlockHitResult hitResult = calculateLegitHitResult(client.player, targetPos);
+        return interactLegitWithHitResult(client, hitResult);
     }
 
-    private static boolean isRespawnAnchor(ClientWorld world, BlockPos pos) {
-        return world.getBlockState(pos).isOf(Blocks.RESPAWN_ANCHOR);
-    }
+    private static ActionResult interactLegitWithHitResult(MinecraftClient client, BlockHitResult hitResult) {
+        if (client.player == null || client.interactionManager == null || client.player.networkHandler == null) {
+            return ActionResult.PASS;
+        }
 
-    private static ActionResult interactWithAnchor(
-            MinecraftClient client,
-            BlockPos anchorPos,
-            Direction hitSide
-    ) {
-        Vec3d hitPosition = Vec3d.ofCenter(anchorPos);
-        hitPosition = hitPosition.add(
-                hitSide.getOffsetX() * 0.5,
-                hitSide.getOffsetY() * 0.5,
-                hitSide.getOffsetZ() * 0.5
-        );
-        BlockHitResult hit = new BlockHitResult(
-                hitPosition,
-                hitSide,
-                anchorPos,
-                false
-        );
+        // Check lại Reach distance chuẩn xác từng điểm hit
+        if (client.player.getEyePos().squaredDistanceTo(hitResult.getPos()) > MAX_REACH_SQUARED) {
+            return ActionResult.PASS;
+        }
+
+        // 1. Silent Look Packet
+        sendSilentLook(client.player, hitResult.getPos());
+
+        // 2. Interact Block Packet
         internalAnchorInteraction = true;
+        ActionResult result;
         try {
-            return client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hit);
+            result = client.interactionManager.interactBlock(client.player, Hand.MAIN_HAND, hitResult);
         } finally {
             internalAnchorInteraction = false;
         }
+
+        // 3. Hand Swing Packet (Quan trọng để qua mặt Anti-cheat & Server Vanilla)
+        if (result.isAccepted()) {
+            client.player.networkHandler.sendPacket(new HandSwingC2SPacket(Hand.MAIN_HAND));
+        }
+
+        return result;
+    }
+
+    private static void sendSilentLook(ClientPlayerEntity player, Vec3d targetVec) {
+        Vec3d eyePos = player.getEyePos();
+        double dx = targetVec.x - eyePos.x;
+        double dy = targetVec.y - eyePos.y;
+        double dz = targetVec.z - eyePos.z;
+        double dh = Math.sqrt(dx * dx + dz * dz);
+
+        float yaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0F;
+        float pitch = (float) -Math.toDegrees(Math.atan2(dy, dh));
+
+        if (player.networkHandler != null) {
+            player.networkHandler.sendPacket(
+                new PlayerMoveC2SPacket.LookAndOnGround(yaw, pitch, player.isOnGround())
+            );
+        }
+    }
+
+    private static BlockHitResult calculateLegitHitResult(ClientPlayerEntity player, BlockPos targetPos) {
+        Vec3d eyePos = player.getEyePos();
+        Direction bestFace = Direction.UP;
+        double minDistance = Double.MAX_VALUE;
+
+        for (Direction side : Direction.values()) {
+            Vec3d faceCenter = Vec3d.ofCenter(targetPos).add(
+                side.getOffsetX() * 0.5,
+                side.getOffsetY() * 0.5,
+                side.getOffsetZ() * 0.5
+            );
+            double dist = eyePos.squaredDistanceTo(faceCenter);
+            if (dist < minDistance) {
+                minDistance = dist;
+                bestFace = side;
+            }
+        }
+
+        Vec3d hitVec = Vec3d.ofCenter(targetPos).add(
+            bestFace.getOffsetX() * 0.45,
+            bestFace.getOffsetY() * 0.45,
+            bestFace.getOffsetZ() * 0.45
+        );
+
+        return new BlockHitResult(hitVec, bestFace, targetPos, false);
+    }
+
+    private static Optional<ShieldPlacement> findOptimalShieldPlacement(ClientPlayerEntity player, ClientWorld world, BlockPos anchorPos) {
+        double dx = player.getX() - (anchorPos.getX() + 0.5);
+        double dz = player.getZ() - (anchorPos.getZ() + 0.5);
+
+        int primaryX = 0;
+        int primaryZ = 0;
+
+        if (Math.abs(dx) > 0.35) primaryX = dx > 0 ? 1 : -1;
+        if (Math.abs(dz) > 0.35) primaryZ = dz > 0 ? 1 : -1;
+
+        if (primaryX == 0 && primaryZ == 0) {
+            Direction facing = player.getHorizontalFacing();
+            primaryX = facing.getOffsetX();
+            primaryZ = facing.getOffsetZ();
+        }
+
+        int[][] candidateOffsets = new int[][] {
+            {primaryX, primaryZ},
+            {primaryX, 0},
+            {0, primaryZ},
+            {primaryX, -primaryZ},
+            {-primaryX, primaryZ},
+            {-primaryX, 0},
+            {0, -primaryZ},
+            {-primaryX, -primaryZ}
+        };
+
+        for (int[] offset : candidateOffsets) {
+            int ox = offset[0];
+            int oz = offset[1];
+            if (ox == 0 && oz == 0) continue;
+
+            BlockPos shieldTarget = anchorPos.add(ox, 0, oz);
+
+            if (!world.getBlockState(shieldTarget).isReplaceable()) continue;
+            if (player.getBoundingBox().intersects(new Box(shieldTarget))) continue;
+
+            BlockPos supportFloor = shieldTarget.down();
+            if (world.getBlockState(supportFloor).isSolidBlock(world, supportFloor)) {
+                Vec3d hitVec = Vec3d.ofCenter(supportFloor).add(0.0, 0.5, 0.0);
+                BlockHitResult hit = new BlockHitResult(hitVec, Direction.UP, supportFloor, false);
+                return Optional.of(new ShieldPlacement(shieldTarget, hit));
+            }
+
+            for (Direction side : Direction.values()) {
+                BlockPos neighbor = shieldTarget.offset(side);
+                if (neighbor.equals(anchorPos)) continue;
+
+                if (world.getBlockState(neighbor).isSolidBlock(world, neighbor)) {
+                    Direction hitSide = side.getOpposite();
+                    Vec3d hitVec = Vec3d.ofCenter(neighbor).add(
+                        hitSide.getOffsetX() * 0.5,
+                        hitSide.getOffsetY() * 0.5,
+                        hitSide.getOffsetZ() * 0.5
+                    );
+                    BlockHitResult hit = new BlockHitResult(hitVec, hitSide, neighbor, false);
+                    return Optional.of(new ShieldPlacement(shieldTarget, hit));
+                }
+            }
+        }
+
+        return Optional.empty();
     }
 
     private static boolean selectHotbarItem(ClientPlayerEntity player, Item item) {
         int slot = findHotbarItem(player, item);
-        if (slot < 0) {
-            return false;
-        }
+        if (slot < 0) return false;
         player.getInventory().selectedSlot = slot;
         return true;
     }
 
     private static int findHotbarItem(ClientPlayerEntity player, Item item) {
+        int currentSlot = player.getInventory().selectedSlot;
+        if (player.getInventory().getStack(currentSlot).isOf(item)) {
+            return currentSlot;
+        }
         for (int slot = 0; slot < 9; slot++) {
-            if (player.getInventory().getStack(slot).isOf(item)) {
-                return slot;
-            }
+            if (player.getInventory().getStack(slot).isOf(item)) return slot;
         }
         return -1;
     }
 
-    private static java.util.Optional<ShieldPlacement> findShieldPlacement(
-            MinecraftClient client,
-            BlockPos anchorPos,
-            Direction defenseDirection
-    ) {
-        ClientWorld world = client.world;
-        if (world == null) {
-            return Optional.empty();
-        }
-        BlockPos target = anchorPos.offset(defenseDirection);
-        if (!world.getBlockState(target).isReplaceable()) {
-            return Optional.empty();
-        }
-        if (client.player != null
-                && client.player.getBoundingBox().intersects(new Box(target))) {
-            return Optional.empty();
-        }
+    private enum Stage { CHARGE_ANCHOR, PLACE_SHIELD, EXPLODE_ANCHOR }
 
-        // Click the solid ground below the adjacent target rather than the
-        // anchor. Clicking an anchor with Glowstone invokes its charge handler;
-        // clicking the ground's top face places Glowstone at the exact target.
-        BlockPos support = target.down();
-        if (!world.getBlockState(support).isSolidBlock(world, support)) {
-            return Optional.empty();
-        }
-        Vec3d hitPosition = Vec3d.ofCenter(support).add(0.0, 0.5, 0.0);
-        BlockHitResult hit = new BlockHitResult(
-                hitPosition,
-                Direction.UP,
-                support,
-                false
-        );
-        return Optional.of(new ShieldPlacement(target, hit));
-    }
-
-    private static Direction findDefenseDirection(
-            ClientPlayerEntity player,
-            BlockPos anchorPos
-    ) {
-        double deltaX = player.getX() - (anchorPos.getX() + 0.5);
-        double deltaZ = player.getZ() - (anchorPos.getZ() + 0.5);
-        if (Math.abs(deltaX) < 0.001 && Math.abs(deltaZ) < 0.001) {
-            return player.getHorizontalFacing().getOpposite();
-        }
-        if (Math.abs(deltaX) >= Math.abs(deltaZ)) {
-            return deltaX >= 0.0 ? Direction.EAST : Direction.WEST;
-        }
-        return deltaZ >= 0.0 ? Direction.SOUTH : Direction.NORTH;
-    }
-
-    private static void notify(MinecraftClient client, String message) {
-        if (client.player != null) {
-            client.player.sendMessage(net.minecraft.text.Text.literal(message), true);
-        }
-    }
-
-    private enum Stage {
-        CHARGE_ANCHOR,
-        PLACE_SHIELD,
-        EXPLODE_ANCHOR
-    }
-
-    private static final class PendingAction {
+    private static final class AnchorTask {
         private final BlockPos anchorPos;
         private final AnchorMacroConfig.Mode mode;
         private final int safeHotbarSlot;
         private final int chargeDelayMs;
         private final int defenseDelayMs;
-        private final Direction defenseDirection;
+        private final long createdTick;
+
         private Stage stage = Stage.CHARGE_ANCHOR;
-        private boolean placementConfirmed;
+        private long stageStartTick;
         private boolean chargeRequested;
         private boolean chargeConfirmed;
         private int chargesBeforeRequest;
-        private long chargeRequestedAtTick;
-        private int chargeRetries;
         private boolean shieldRequested;
         private boolean shieldConfirmed;
         private BlockPos shieldTarget;
         private ShieldPlacement shieldPlacement;
-        private long shieldRequestedAtTick;
-        private int shieldRetries;
         private boolean explosionRequested;
-        private boolean explosionConfirmed;
-        private long explosionRequestedAtTick;
-        private int explosionRetries;
         private long nextActionAtTick;
 
-        private PendingAction(
-                BlockPos anchorPos,
-                AnchorMacroConfig.Mode mode,
-                int safeHotbarSlot,
-                int chargeDelayMs,
-                int defenseDelayMs,
-                Direction defenseDirection
-        ) {
+        private AnchorTask(BlockPos anchorPos, AnchorMacroConfig.Mode mode, int safeHotbarSlot, int chargeDelayMs, int defenseDelayMs) {
             this.anchorPos = anchorPos;
             this.mode = mode;
             this.safeHotbarSlot = AnchorMacroConfig.clampHotbarSlot(safeHotbarSlot);
             this.chargeDelayMs = AnchorMacroConfig.clampDelayMs(chargeDelayMs);
             this.defenseDelayMs = AnchorMacroConfig.clampDelayMs(defenseDelayMs);
-            this.defenseDirection = defenseDirection;
+            this.createdTick = clientTick;
+            this.stageStartTick = clientTick;
             this.nextActionAtTick = clientTick + millisecondsToTicks(this.chargeDelayMs);
         }
 
@@ -584,16 +484,5 @@ public final class AnchorMacroActions {
         }
     }
 
-    private static final class PlacementAttempt {
-        private final BlockPos anchorPos;
-        private final long expiresAtTick;
-
-        private PlacementAttempt(BlockPos anchorPos, long expiresAtTick) {
-            this.anchorPos = anchorPos;
-            this.expiresAtTick = expiresAtTick;
-        }
-    }
-
-    private record ShieldPlacement(BlockPos target, BlockHitResult hitResult) {
-    }
+    private record ShieldPlacement(BlockPos target, BlockHitResult hitResult) {}
 }

@@ -12,6 +12,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(ClientWorld.class)
 public abstract class ClientWorldMixin {
+
+    /**
+     * Bắt trực tiếp Server Packet S2C (như khi Server gửi tín hiệu Anchor nổ/đổi charge)
+     */
     @Inject(method = "handleBlockUpdate", at = @At("TAIL"))
     private void anchorMacro$observeServerBlockUpdate(
             BlockPos pos,
@@ -22,6 +26,9 @@ public abstract class ClientWorldMixin {
         AnchorMacroActions.onServerBlockUpdate(pos, state);
     }
 
+    /**
+     * Bắt cập nhật khối từ Client Prediction (Giúp phản hồi tức thì ở Ping 60-100ms)
+     */
     @Inject(method = "setBlockState", at = @At("TAIL"))
     private void anchorMacro$observeClientBlockStateChange(
             BlockPos pos,
@@ -30,7 +37,7 @@ public abstract class ClientWorldMixin {
             int maxUpdateDepth,
             CallbackInfoReturnable<Boolean> callbackInfo
     ) {
-        if (callbackInfo.getReturnValue()) {
+        if (callbackInfo.getReturnValue() != null && callbackInfo.getReturnValue()) {
             AnchorMacroActions.onClientBlockStateChange(pos, state);
         }
     }
